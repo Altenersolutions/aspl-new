@@ -1,0 +1,31 @@
+# Optional Render Blueprint. You can also create the Web Service by hand with the same values (see README).
+services:
+  - type: web
+    name: inventory-wms-api
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MONGO_URI
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: SEED_ON_START
+        value: "true"
+      - key: SEED_DEMO_USERS
+        value: "false"
+      - key: SERVE_LEGACY
+        value: "false"
