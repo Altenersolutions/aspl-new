@@ -52,6 +52,7 @@ async function transactions({ type, part, user, from, to, limit = 200, skip = 0,
   if (serial) q.serialNumber = serial; if (batch) q.batchNumber = batch;
   if (user) q.userName = new RegExp(esc(user), "i");
   if (from || to) q.timestamp = { ...(from && { $gte: new Date(from) }), ...(to && { $lte: new Date(to) }) };
+  if (arguments[1] === "count") return InventoryTransaction.countDocuments(q);
   return InventoryTransaction.find(q).sort({ timestamp: -1 }).skip(Number(skip)).limit(Math.min(Number(limit), 1000)).populate("fromLocation toLocation", "locationCode path").populate("vehicle", "vehicleNumber").lean();
 }
 
@@ -62,6 +63,7 @@ async function auditTrail({ action, entityType, user, from, to, override, limit 
   if (user) q.userName = new RegExp(esc(user), "i");
   if (override === "true") q.override = true;
   if (from || to) q.at = { ...(from && { $gte: new Date(from) }), ...(to && { $lte: new Date(to) }) };
+  if (arguments[1] === "count") return AuditLog.countDocuments(q);
   return AuditLog.find(q).sort({ at: -1 }).skip(Number(skip)).limit(Math.min(Number(limit), 1000)).lean();
 }
 

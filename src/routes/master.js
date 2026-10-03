@@ -113,10 +113,7 @@ r.get("/bom", view, wrap(async (req, res) => res.json(await M.BOM.find().sort({ 
 r.post("/bom", eng, validate(z.object({ vehicleModel: rq(40), name: str(120).optional() })), wrap(async (req, res) => res.status(201).json(await M.BOM.create({ ...req.body, vehicleModel: req.body.vehicleModel.toUpperCase() }))));
 r.get("/bom/:model/revisions", view, wrap(async (req, res) => res.json(await M.BOMRevision.find({ vehicleModel: req.params.model.toUpperCase() }).sort({ createdAt: 1 }).populate("items.part", "partName").lean())));
 r.post("/bom/:model/revisions", eng, validate(z.object({ revision: rq(40), effectiveDate: str(40).optional(), changeReason: rq(500), items: z.array(bomItem).min(1).max(1000) })), wrap(async (req, res) => {
-  const bom = await M.BOM.findOne({ vehicleModel: req.params.model.toUpperCase() }); if (!bom) throw notFound("BOM", req.params.model);
-  const items = [];
-  for (const it of req.body.items) { const part = await M.PartMaster.findOne({ partNumber: it.partNumber.toUpperCase() }); if (!part) throw new BusinessError("UNKNOWN_PART", `Unknown part ${it.partNumber}`, { status: 400 }); items.push({ part: part._id, partNumber: part.partNumber, requiredQuantity: it.requiredQuantity, requiredRevision: it.requiredRevision || undefined, trackingType: part.trackingType, optional: !!it.optional, installationPosition: it.installationPosition }); }
-  const rev = await atomic(async (ctx) => { const x = await ctx.create(M.BOMRevision, { bom: bom._id, vehicleModel: bom.vehicleModel, revision: req.body.revision, effectiveDate: req.body.effectiveDate, changeReason: req.body.changeReason, items, status: "DRAFT" }); await audit(ctx, req.user, { action: "BOM_REVISION_CREATED", entityType: "BOM", entityId: bom._id, entityLabel: `${bom.vehicleModel} ${x.revision}`, reason: req.body.changeReason, after: { items: items.length } }); return x; });
+  const rev = await require("../domain/catalog").createBomRevision(req.user, req.params.model, req.body);
   res.status(201).json(rev);
 }));
 r.post("/bom/:model/revisions/:rev/approve", requirePerm(P.BOM_APPROVE), wrap(async (req, res) => {

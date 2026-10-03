@@ -8,6 +8,9 @@ const ledger = require("./ledger");
 const sm = require("./stateMachine");
 const codes = require("./codes");
 const { guarded, logOverride } = require("./overrides");
+const quality = require("./quality");
+const { reservedQty, binQty } = require("./reservations");
+const { PurchaseOrder } = require("../models");
 const { resolveDestination, rejectionReason, findSpecial, locationPath } = require("./locations");
 
 const s = (v) => (v == null ? "" : String(v).trim());
@@ -63,11 +66,28 @@ async function receive(user, body) {
     }
   }
 
+  let po = null, poErr = null;
+  if (s(body.poNumber)) {
+    po = await PurchaseOrder.findOne({ poNo: s(body.poNumber).toUpperCase() });
+    if (!po) throw invalid(`Purchase order ${body.poNumber} not found.`);
+    if (String(po.supplier) !== String(supplier._id)) throw new BusinessError("PO_SUPPLIER_MISMATCH", "This purchase order belongs to a different supplier.");
+    if (["CLOSED", "CANCELLED"].includes(po.status)) throw new BusinessError("PO_CLOSED", `Purchase order ${po.poNo} is ${po.status}.`);
+    const issues = [];
+    for (const p of prepared) {
+      const ln = po.lines.find((l) => String(l.part) === String(p.part._id));
+      if (!ln) issues.push(`${p.part.partNumber} is not on ${po.poNo}`);
+      else if (ln.receivedQty + p.qty > ln.orderedQty) issues.push(`${p.part.partNumber}: ordered ${ln.orderedQty}, already received ${ln.receivedQty}, receiving ${p.qty}`);
+    }
+    if (issues.length) {
+      const e = new BusinessError("PO_MISMATCH", `Receipt does not match purchase order ${po.poNo}: ${issues.join("; ")}.`, { overridable: true, overrideKind: "PO_MISMATCH", details: { issues } });
+      poErr = await guarded(user, body.override, async () => { throw e; });
+    }
+  }
   return atomic(async (ctx) => {
     const receiving = await findSpecial("RECEIVING");
     const receiptNo = await nextId("receipt", "GRN", 5);
     const receipt = await ctx.create(Receipt, {
-      receiptNo, supplier: supplier._id, invoiceNo, invoiceDate: body.invoiceDate ? new Date(body.invoiceDate) : undefined,
+      receiptNo, supplier: supplier._id, invoiceNo, poNo: po ? po.poNo : undefined, invoiceDate: body.invoiceDate ? new Date(body.invoiceDate) : undefined,
       receivedBy: user.id, notes: s(body.notes), lines: [],
     });
     const created = [];
@@ -96,7 +116,14 @@ async function receive(user, body) {
       receipt.lines.push({ part: p.part._id, materialItems: ids, quantity: p.qty });
     }
     await ctx.set(Receipt, receipt._id, { lines: receipt.lines });
-    await audit(ctx, user, { action: "MATERIAL_RECEIPT", entityType: "Receipt", entityId: receipt._id, entityLabel: receiptNo, where: "RECEIVING", after: { invoiceNo, supplier: supplier.name, items: created.length } });
+    if (po) {
+      const lines = po.toObject().lines;
+      for (const p of prepared) { const ln = lines.find((l) => String(l.part) === String(p.part._id)); if (ln) ln.receivedQty += p.qty; }
+      const done = lines.every((l) => l.receivedQty >= l.orderedQty);
+      await ctx.set(PurchaseOrder, po._id, { lines, status: done ? "CLOSED" : "PARTIAL" });
+      if (poErr) await logOverride(ctx, user, poErr, body.override, { operation: "RECEIVE", originalValue: { po: po.poNo, issues: poErr.details.issues }, newValue: { receipt: receiptNo }, referenceTransaction: receiptNo, entityType: "Receipt", entityId: receipt._id, entityLabel: receiptNo });
+    }
+    await audit(ctx, user, { action: "MATERIAL_RECEIPT", entityType: "Receipt", entityId: receipt._id, entityLabel: receiptNo, where: "RECEIVING", after: { invoiceNo, po: po && po.poNo, supplier: supplier.name, items: created.length } });
     return { receiptNo, receiptId: receipt._id, invoiceNo, items: created };
   });
 }
@@ -137,19 +164,22 @@ async function inspect(user, body, forcedType) {
   const installed = item.status === MS.INSTALLED;
   const toStatus = installed ? MS.INSTALLED : sm.RESULT_TO_STATUS[body.result];
   if (!installed) sm.assertTransition(item.status, toStatus, "QC");
+  const tplRes = await quality.applyTemplate(item.part, type, body.measurements || []);
+  if (tplRes.failed.length && body.result === "PASS") throw new BusinessError("QC_OUT_OF_SPEC", `Out of specification: ${tplRes.failed.join(", ")}. The result cannot be PASS - record HOLD or FAIL.`, { details: { failed: tplRes.failed } });
 
   return atomic(async (ctx) => {
     const prev = await QCInspection.findOne({ materialItem: item._id }).sort({ createdAt: -1 });
     const insp = await ctx.create(QCInspection, {
       inspectionId: await nextId("qc", "QC", 6), materialItem: item._id, part: item.part, serialNumber: item.serialNumber, batchNumber: item.batchNumber,
       inspectionType: type, inspector: user.id, result: body.result, remarks: s(body.remarks),
-      measurements: body.measurements || [], attachments: body.attachments || [],
+      measurements: tplRes.measurements, attachments: body.attachments || [],
       reworkRequired: !!body.reworkRequired, previousInspection: prev && prev._id, quantity: item.quantity,
     });
+    if (body.result === "FAIL") await quality.raiseNcr(ctx, user, item, insp, s(body.remarks));
     const fromStatus = item.status;
     if (!installed) {
       // Decide destination for each stock row of this item.
-      const rows = await ledger.balancesOf(item._id);
+      const rows = (await ledger.balancesOf(item._id)).filter((r) => r.location.type !== "VEHICLE"); // installed quantity stays on the vehicle
       let targetType = null;
       if (toStatus === MS.HOLD) targetType = "QC_HOLD";
       if (toStatus === MS.REJECTED) targetType = "REJECT";
@@ -184,7 +214,7 @@ async function disposition(user, body) {
   const to = map[action];
   sm.assertTransition(item.status, to, action);
   return atomic(async (ctx) => {
-    const rows = await ledger.balancesOf(item._id);
+    const rows = (await ledger.balancesOf(item._id)).filter((r) => r.location.type !== "VEHICLE"); // installed quantity stays on the vehicle
     const fromStatus = item.status;
     if (action === "REQUALIFY") { await ctx.set(MaterialItem, item._id, { status: to }); await audit(ctx, user, { action: "LEGACY_REQUALIFY", entityType: "MaterialItem", entityId: item._id, entityLabel: item.partNumber, reason: body.reason, before: { status: item.status }, after: { status: to } }); return { status: to }; }
     const txnType = action === "REWORK" || action === "REWORK_DONE" ? "REWORK" : action === "SCRAP" ? "SCRAP" : "RETURN";
@@ -258,6 +288,8 @@ async function issue(user, body) {
   if (from.type !== "BIN") throw new BusinessError("INVALID_SOURCE", "Material can only be issued from a storage bin. Put it away first.");
   const wip = await findSpecial("WIP");
   const qty = Number(body.quantity);
+  const resv = await reservedQty(item._id); const free = (await binQty(item._id)) - resv;
+  if (resv > 0 && qty > free) throw new BusinessError("RESERVED_STOCK", `${Math.max(0, free)} unit(s) are free; the rest is reserved for a kit. Issue the kit instead.`, { details: { free } });
   return atomic(async (ctx) => {
     const txn = await ledger.post(ctx, user, { type: "ISSUE", item, qty, from: from._id, to: wip._id, fromStatus: item.status, toStatus: item.status, reason: body.purpose, refType: "Issue" });
     await audit(ctx, user, { action: "MATERIAL_ISSUE", entityType: "MaterialItem", entityId: item._id, entityLabel: item.serialNumber || item.batchNumber, reason: body.purpose, before: { location: from.locationCode }, after: { location: wip.locationCode, quantity: qty }, reference: txn.transactionId });

@@ -9,6 +9,7 @@ const { authenticate, errorHandler, wrap } = require("./middleware/common");
 const auth = require("./routes/auth");
 const workflows = require("./routes/workflows");
 const master = require("./routes/master");
+const extra = require("./routes/extra");
 const legacyRoutes = require("./legacy/routes");
 const legacyActivity = require("./legacy/activityLog");
 
@@ -16,8 +17,9 @@ function createApp() {
   const app = express();
   app.set("trust proxy", 1);
   app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
-  app.use(cors(config.corsOrigins.length ? { origin: config.corsOrigins } : { origin: !config.isProd }));
-  app.use(express.json({ limit: "1mb" }));
+  const corsBase = { exposedHeaders: ["X-Total-Count", "Content-Disposition"] };
+  app.use(cors(config.corsOrigins.length ? { ...corsBase, origin: config.corsOrigins } : { ...corsBase, origin: !config.isProd }));
+  app.use(express.json({ limit: "1500kb" }));
   app.use(rateLimit({ windowMs: 60 * 1000, limit: Number(process.env.RATE_LIMIT || 900), standardHeaders: true, legacyHeaders: false }));
 
   // ---- public ----
@@ -52,6 +54,7 @@ function createApp() {
   app.use("/api/users", auth.users);
   app.use("/api", workflows);
   app.use("/api", master);
+  app.use("/api", extra);
   app.use("/", legacyActivity, legacyRoutes);
 
   app.use((req, res) => res.status(404).json({ message: "Not found" }));

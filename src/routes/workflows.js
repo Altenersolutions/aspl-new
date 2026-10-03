@@ -19,6 +19,11 @@ const req_ = (n = 200) => z.string().trim().min(1).max(n);
 const num = z.coerce.number().finite();
 const override = z.object({ reason: str(500), confirm: z.boolean() }).optional();
 const r = express.Router();
+const lim = (req, d = 500) => ({ skip: Math.max(0, parseInt(req.query.skip, 10) || 0), limit: Math.min(parseInt(req.query.limit, 10) || d, 1000) });
+async function paged(req, res, Model, q, sort, populate = []) {
+  const { skip, limit } = lim(req); res.set("X-Total-Count", String(await Model.countDocuments(q)));
+  let cur = Model.find(q).sort(sort).skip(skip).limit(limit); populate.forEach((p) => (cur = cur.populate(...p))); return res.json(await cur.lean());
+}
 
 // ---------- SCAN ----------
 r.post("/scan", requirePerm(P.SCAN), validate(z.object({ code: req_(500), context: z.object({ vehicle: str(60).optional(), quantity: num.optional() }).optional() })), wrap(async (req, res) => {
@@ -39,11 +44,11 @@ r.get("/qr", wrap(async (req, res) => {
 
 // ---------- RECEIVING ----------
 const receiveBody = z.object({
-  supplierId: oid, invoiceNo: z.string().trim().max(100).default(""), invoiceDate: str(40).optional(), notes: str(500).optional(),
+  supplierId: oid, invoiceNo: z.string().trim().max(100).default(""), invoiceDate: str(40).optional(), notes: str(500).optional(), poNumber: str(40).optional(), override,
   lines: z.array(z.object({ partNumber: req_(80), quantity: num, revision: str(40).optional(), batchNumber: str(80).optional(), serialNumbers: z.array(str(80)).max(5000).optional() })).min(1).max(200),
 });
 r.post("/receiving", requirePerm(P.RECEIVE), validate(receiveBody), wrap(async (req, res) => res.status(201).json(await materials.receive(req.user, req.body))));
-r.get("/receiving", requirePerm(P.SCAN), wrap(async (req, res) => res.json(await M.Receipt.find().sort({ createdAt: -1 }).limit(200).populate("supplier", "name code").populate("receivedBy", "name").lean())));
+r.get("/receiving", requirePerm(P.SCAN), wrap(async (req, res) => paged(req, res, M.Receipt, {}, { createdAt: -1 }, [["supplier", "name code"], ["receivedBy", "name"]])));
 r.get("/receiving/:id", requirePerm(P.SCAN), wrap(async (req, res) => {
   const rc = await M.Receipt.findById(req.params.id).populate("supplier", "name code").lean();
   if (!rc) throw notFound("Receipt", req.params.id);
@@ -63,7 +68,7 @@ for (const [path, type] of [["incoming", "INCOMING"], ["component", "COMPONENT"]
 }
 r.get("/qc", requirePerm(P.SCAN), wrap(async (req, res) => {
   const q = {}; if (req.query.materialItemId && /^[a-f\d]{24}$/i.test(req.query.materialItemId)) q.materialItem = req.query.materialItemId; if (req.query.type) q.inspectionType = String(req.query.type);
-  res.json(await M.QCInspection.find(q).sort({ createdAt: -1 }).limit(300).populate("inspector", "name").populate("materialItem", "partNumber serialNumber batchNumber status").populate("vehicle", "vehicleNumber").lean());
+  return paged(req, res, M.QCInspection, q, { createdAt: -1 }, [["inspector", "name"], ["materialItem", "partNumber serialNumber batchNumber status"], ["vehicle", "vehicleNumber"]]);
 }));
 r.get("/qc/queue", requirePerm(P.SCAN), wrap(async (req, res) => {
   const map = { incoming: ["PENDING_INCOMING_QC"], retest: ["HOLD", "PENDING_RETEST", "QC_REQUIRED"], rework: ["REJECTED", "REWORK"], component: ["APPROVED"] };
@@ -75,7 +80,7 @@ r.get("/qc/queue", requirePerm(P.SCAN), wrap(async (req, res) => {
 r.get("/materials", requirePerm(P.SCAN), wrap(async (req, res) => {
   if (req.query.q) return res.json(await reports.materialSearch(req.query.q));
   const q = {}; if (req.query.status) q.status = String(req.query.status);
-  res.json(await M.MaterialItem.find(q).sort({ createdAt: -1 }).limit(500).lean());
+  return paged(req, res, M.MaterialItem, q, { createdAt: -1 });
 }));
 r.get("/materials/awaiting-putaway", requirePerm(P.SCAN), wrap(async (req, res) => {
   const rec = await M.Location.findOne({ type: "RECEIVING" });
@@ -95,8 +100,8 @@ r.post("/inventory/issue", requirePerm(P.ISSUE), validate(z.object({ ...qtyBody,
 r.post("/inventory/return", requirePerm(P.RETURN), validate(z.object({ ...qtyBody, reason: req_(300) })), wrap(async (req, res) => res.json(await materials.returnStock(req.user, req.body))));
 r.post("/inventory/transfer", requirePerm(P.TRANSFER), validate(z.object({ ...qtyBody, fromLocation: req_(100), toLocation: req_(100), reason: str(300).optional(), override })), wrap(async (req, res) => res.json(await materials.transfer(req.user, req.body))));
 r.post("/inventory/adjust", requirePerm(P.ADJUST), validate(z.object({ materialItemId: oid, location: req_(100), newQuantity: num, reason: req_(500), confirm: z.boolean() })), wrap(async (req, res) => res.json(await materials.adjust(req.user, req.body))));
-r.get("/inventory/transactions", requirePerm(P.REPORTS), wrap(async (req, res) => res.json(await reports.transactions(req.query))));
-r.get("/inventory/stock", requirePerm(P.REPORTS), wrap(async (req, res) => res.json(await reports.inventoryReport(req.query))));
+r.get("/inventory/transactions", requirePerm(P.REPORTS), wrap(async (req, res) => { res.set("X-Total-Count", String(await reports.transactions(req.query, "count"))); res.json(await reports.transactions(req.query)); }));
+r.get("/inventory/stock", requirePerm(P.REPORTS), wrap(async (req, res) => { const all = await reports.inventoryReport(req.query); const { skip, limit } = lim(req); res.set("X-Total-Count", String(all.length)); res.json(all.slice(skip, skip + limit)); }));
 
 // ---------- HANDOVER ----------
 r.post("/handover", requirePerm(P.HANDOVER), validate(z.object({ ...qtyBody, toUserId: oid, fromLocation: req_(100), purpose: req_(300), department: str(100).optional() })), wrap(async (req, res) => res.status(201).json(await handover.create(req.user, req.body))));
@@ -121,13 +126,13 @@ const instBody = { vehicle: req_(100), materialItemId: oid, quantity: num.option
 r.post("/vehicles/:id/check", requirePerm(P.SCAN), validate(z.object({ materialItemId: oid, quantity: num.optional(), fromLocation: str(100).optional() })), wrap(async (req, res) => res.json(await assembly.check({ ...req.body, vehicle: req.params.id }))));
 r.post("/vehicles/:id/install", requirePerm(P.INSTALL), validate(z.object({ materialItemId: oid, quantity: num.optional(), fromLocation: str(100).optional(), override })), wrap(async (req, res) => res.json(await assembly.install(req.user, { ...req.body, vehicle: req.params.id }))));
 r.post("/vehicles/:id/remove", requirePerm(P.REMOVE), validate(z.object({ materialItemId: oid, quantity: num.optional(), reason: req_(500), disposition: z.enum(["AVAILABLE", "QC_REQUIRED", "HOLD", "REWORK"]), override })), wrap(async (req, res) => res.json(await assembly.remove(req.user, { ...req.body, vehicle: req.params.id }))));
-r.get("/installations", requirePerm(P.SCAN), wrap(async (req, res) => { const q = {}; if (req.query.active) q.active = req.query.active === "true"; res.json(await M.Installation.find(q).sort({ installedAt: -1 }).limit(500).lean()); }));
+r.get("/installations", requirePerm(P.SCAN), wrap(async (req, res) => { const q = {}; if (req.query.active) q.active = req.query.active === "true"; return paged(req, res, M.Installation, q, { installedAt: -1 }); }));
 
 // ---------- TRACEABILITY / REPORTS ----------
 r.get("/traceability/vehicle/:id", requirePerm(P.REPORTS), wrap(async (req, res) => res.json(await reports.vehicleTrace(req.params.id))));
 r.get("/traceability/component/:id", requirePerm(P.REPORTS), wrap(async (req, res) => res.json(await reports.componentTrace(req.params.id))));
 r.get("/traceability/serial/:serial", requirePerm(P.REPORTS), wrap(async (req, res) => res.json(await reports.componentTrace(req.params.serial))));
-r.get("/audit", requirePerm(P.AUDIT), wrap(async (req, res) => res.json(await reports.auditTrail(req.query))));
+r.get("/audit", requirePerm(P.AUDIT), wrap(async (req, res) => { res.set("X-Total-Count", String(await reports.auditTrail(req.query, "count"))); res.json(await reports.auditTrail(req.query)); }));
 r.get("/overrides", requirePerm(P.AUDIT), wrap(async (req, res) => res.json(await M.OverrideRecord.find().sort({ at: -1 }).limit(300).lean())));
 r.get("/dashboard", requirePerm(P.SCAN), wrap(async (req, res) => res.json(await reports.dashboard())));
 

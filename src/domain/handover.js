@@ -8,6 +8,7 @@ const { findSpecial } = require("./locations");
 const { getItem, getLocation } = require("./materials");
 const { nextId } = require("./counters");
 const { can, P } = require("./permissions");
+const { reservedQty, binQty } = require("./reservations");
 const s = (v) => (v == null ? "" : String(v).trim());
 
 async function create(user, body) {
@@ -21,6 +22,7 @@ async function create(user, body) {
   if (!["BIN", "WIP"].includes(from.type)) throw new BusinessError("INVALID_SOURCE", "Handover must originate from a storage bin or the WIP/issued area.");
   const qty = Number(body.quantity);
   const transit = await findSpecial("TRANSIT");
+  if (from.type === "BIN") { const resv = await reservedQty(item._id); const free = (await binQty(item._id)) - resv; if (resv > 0 && qty > free) throw new BusinessError("RESERVED_STOCK", `${Math.max(0, free)} unit(s) are free; the rest is reserved for a kit.`, { details: { free } }); }
   return atomic(async (ctx) => {
     const handoverId = await nextId("handover", "HO", 6);
     const txn = await ledger.post(ctx, user, { type: "HANDOVER", item, qty, from: from._id, to: transit._id, fromStatus: item.status, toStatus: item.status, reason: `Handover ${handoverId} to ${to.name}: ${body.purpose}`, refType: "Handover", refId: handoverId });

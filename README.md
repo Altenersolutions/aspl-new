@@ -1,29 +1,25 @@
 # Inventory WMS – Backend API (Node + Express + MongoDB)
 
-Upload this whole folder to a GitHub repo, then connect the repo to Render.
+Upload this folder's contents to GitHub, then connect the repo to Render.
 
-## Render settings (Web Service → connect this repo)
-| Setting | Value |
-|---|---|
-| Runtime | Node |
-| Build Command | `npm install --omit=dev` |
-| Start Command | `npm start` |
-| Health Check Path | `/api/health` |
+## Render settings (Web Service)
+Build `npm install --omit=dev` · Start `npm start` · Health check `/api/health`
 
-## Render environment variables
+## Environment variables
 | Key | Value |
 |---|---|
 | `NODE_ENV` | `production` |
 | `NODE_VERSION` | `20` |
-| `JWT_SECRET` | any long random text (32+ chars) |
-| `MONGO_URI` | MongoDB Atlas connection string, ending `/inventory?retryWrites=true&w=majority` |
-| `BOOTSTRAP_ADMIN_EMAIL` | your admin login email |
-| `BOOTSTRAP_ADMIN_PASSWORD` | your admin password (min 8 chars) |
-| `SEED_ON_START` | `true` (creates sample locations/parts/BOMs/vehicles; safe to repeat) |
+| `JWT_SECRET` | long random text (32+ chars) |
+| `MONGO_URI` | Atlas string ending `/inventory?retryWrites=true&w=majority` |
+| `CORS_ORIGINS` | your Netlify URL, no trailing slash |
+| `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | first admin (only used while no users exist) |
+| `SEED_ON_START` | `true` once to create sample master data, then `false` |
 | `SEED_DEMO_USERS` | `false` |
 | `SERVE_LEGACY` | `false` |
-| `CORS_ORIGINS` | your Netlify URL, e.g. `https://my-wms.netlify.app` (no trailing slash) – add after Netlify is live |
+| `ALERT_*` (optional) | alert thresholds, see `.env.example` |
 
-Check: `https://<your-service>.onrender.com/api/health` → `{"ok":true}`
+## What's in v2.1
+Scan engine · put-away guidance · receiving (mandatory invoice, optional PO matching) · QC state machine with per-part QC templates · NCR/CAPA · handover · BOM revisions + engineering change orders · assembly validation, installation/removal history · kitting & reservations (FIFO) · cycle counts · recall query & quarantine · build book · alerts & analytics · global search · CSV import/export · QC photo/PDF storage · TOTP two-factor + session revocation · append-only ledger/audit.
 
-Local run: `npm install`, copy `.env.example` to `.env`, `npm run seed`, `npm start`. Tests: `npm test` (needs a local MongoDB).
+`docs/API.md` lists every endpoint with its permission (`npm run docs` regenerates it). `npm test` runs 36 end-to-end tests (needs MongoDB on 127.0.0.1:27017). `.github/workflows/test.yml` runs them on every push – create it in GitHub with Add file → Create new file (dot-folders are skipped by drag-and-drop).

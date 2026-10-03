@@ -27,15 +27,21 @@ async function verifyPassword(user, password) {
   }
   return false;
 }
-const sign = (u) => jwt.sign({ id: String(u._id) }, config.jwtSecret, { expiresIn: config.jwtExpiresIn });
+const sign = (u) => jwt.sign({ id: String(u._id), v: u.tokenVersion || 0 }, config.jwtSecret, { expiresIn: config.jwtExpiresIn });
 
-const loginBody = z.object({ email: z.string().trim().min(1).max(200), password: z.string().min(1).max(200) });
+const loginBody = z.object({ email: z.string().trim().min(1).max(200), password: z.string().min(1).max(200), otp: z.string().max(12).optional() });
+const totp = require("../domain/totp");
+const QR = require("qrcode");
 const loginHandler = wrap(async (req, res) => {
   const { email, password } = req.body;
   let user = await User.findOne({ emailId: email });
   if (!user) user = await User.findOne({ emailId: new RegExp(`^${esc(email)}$`, "i") });
   // same message for unknown user / wrong password: no account enumeration
   if (!user || user.active === false || !(await verifyPassword(user, password))) return res.status(401).json({ message: "Invalid email or password" });
+  if (user.totpEnabled) {
+    if (!req.body.otp) return res.status(401).json({ message: "Authentication code required", otpRequired: true });
+    if (!totp.verify(user.totpSecret, req.body.otp)) return res.status(401).json({ message: "Invalid authentication code", otpRequired: true });
+  }
   user.lastLogin = new Date();
   await user.save();
   const token = sign(user);
@@ -52,10 +58,31 @@ authed.post("/change-password", validate(z.object({ currentPassword: z.string(),
   const user = await User.findById(req.user.id);
   if (!(await verifyPassword(user, req.body.currentPassword))) return res.status(401).json({ message: "Current password is incorrect" });
   user.passwordHash = await bcrypt.hash(req.body.newPassword, config.bcryptRounds);
-  user.password = undefined; user.mustChangePassword = false;
+  user.password = undefined; user.mustChangePassword = false; user.tokenVersion = (user.tokenVersion || 0) + 1; // signs out every other session
   await user.save();
   await AuditLog.create({ user: user._id, userName: user.name, role: user.role, action: "PASSWORD_CHANGED", entityType: "User", entityId: String(user._id), entityLabel: user.emailId });
-  res.json({ message: "Password updated" });
+  res.json({ message: "Password updated. Please sign in again." });
+}));
+authed.post("/logout-all", wrap(async (req, res) => { await User.updateOne({ _id: req.user.id }, { $inc: { tokenVersion: 1 } }); res.json({ message: "All sessions signed out." }); }));
+authed.get("/2fa", wrap(async (req, res) => { const u = await User.findById(req.user.id).lean(); res.json({ enabled: !!u.totpEnabled }); }));
+authed.post("/2fa/setup", wrap(async (req, res) => {
+  const u = await User.findById(req.user.id); if (u.totpEnabled) throw new BusinessError("2FA_ALREADY_ON", "Two-factor authentication is already enabled.");
+  u.totpPending = totp.newSecret(); await u.save(); const uri = totp.uri(u.totpPending, u.emailId);
+  res.json({ secret: u.totpPending, uri, qrSvg: await QR.toString(uri, { type: "svg", margin: 1 }) });
+}));
+authed.post("/2fa/enable", validate(z.object({ code: z.string().max(12) })), wrap(async (req, res) => {
+  const u = await User.findById(req.user.id); if (!u.totpPending) throw new BusinessError("2FA_NOT_STARTED", "Start setup first.");
+  if (!totp.verify(u.totpPending, req.body.code)) throw new BusinessError("2FA_BAD_CODE", "That code is not valid. Check your phone clock and try again.", { status: 400 });
+  u.totpSecret = u.totpPending; u.totpPending = undefined; u.totpEnabled = true; await u.save();
+  await AuditLog.create({ user: u._id, userName: u.name, role: u.role, action: "2FA_ENABLED", entityType: "User", entityId: String(u._id), entityLabel: u.emailId });
+  res.json({ ok: true });
+}));
+authed.post("/2fa/disable", validate(z.object({ password: z.string(), code: z.string().max(12) })), wrap(async (req, res) => {
+  const u = await User.findById(req.user.id);
+  if (!(await verifyPassword(u, req.body.password)) || !u.totpEnabled || !totp.verify(u.totpSecret, req.body.code)) throw new BusinessError("2FA_BAD_CODE", "Password or code is incorrect.", { status: 400 });
+  u.totpEnabled = false; u.totpSecret = undefined; await u.save();
+  await AuditLog.create({ user: u._id, userName: u.name, role: u.role, action: "2FA_DISABLED", entityType: "User", entityId: String(u._id), entityLabel: u.emailId });
+  res.json({ ok: true });
 }));
 
 // user administration (admin only, permission checked server-side)

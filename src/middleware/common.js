@@ -14,8 +14,8 @@ const authenticate = wrap(async (req, res, next) => {
   if (!token) return res.status(401).json({ message: "Authentication required" });
   let payload;
   try { payload = jwt.verify(token, config.jwtSecret); } catch { return res.status(403).json({ message: "Invalid or expired token" }); }
-  const user = await User.findById(payload.id).select("name role emailId active").lean();
-  if (!user || user.active === false) return res.status(403).json({ message: "Account disabled or not found" });
+  const user = await User.findById(payload.id).select("name role emailId active tokenVersion").lean();
+  if (!user || user.active === false || (user.tokenVersion || 0) !== (payload.v || 0)) return res.status(403).json({ message: "Session expired or account disabled. Please sign in again." });
   req.user = { id: String(user._id), name: user.name, role: user.role, email: user.emailId };
   next();
 });

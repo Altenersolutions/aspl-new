@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const { Schema } = mongoose;
 const C = require("../domain/constants");
 const legacy = require("./legacy");
+const extra = require("./extra");
 
 const oid = (ref) => ({ type: Schema.Types.ObjectId, ref });
 
@@ -112,7 +113,7 @@ const Receipt = mongoose.model("WmsReceipt", new Schema({
   receiptNo: { type: String, unique: true },
   supplier: { ...oid("WmsSupplier"), required: true },
   invoiceNo: { type: String, required: true, trim: true },
-  invoiceDate: Date,
+  invoiceDate: Date, poNo: String,
   status: { type: String, enum: ["RECEIVED", "QC_IN_PROGRESS", "CLOSED"], default: "RECEIVED" },
   receivedBy: oid("InventoryUser"),
   notes: String,
@@ -273,6 +274,6 @@ const OverrideRecord = (() => {
 const Setting = mongoose.model("WmsSetting", new Schema({ key: { type: String, unique: true }, value: Schema.Types.Mixed }, { timestamps: true }));
 
 module.exports = {
-  ...legacy, Role, Supplier, Location, PartMaster, PartRevision, Vehicle, BOM, BOMRevision, Receipt, MaterialItem,
+  ...legacy, ...extra, Role, Supplier, Location, PartMaster, PartRevision, Vehicle, BOM, BOMRevision, Receipt, MaterialItem,
   StockBalance, QCInspection, InventoryTransaction, Handover, Installation, AuditLog, OverrideRecord, Setting,
 };

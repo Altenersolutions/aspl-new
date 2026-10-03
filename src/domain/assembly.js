@@ -8,6 +8,7 @@ const sm = require("./stateMachine");
 const { guarded, logOverride } = require("./overrides");
 const { findSpecial } = require("./locations");
 const { getItem } = require("./materials");
+const { reservedQty, binQty } = require("./reservations");
 
 const s = (v) => (v == null ? "" : String(v).trim());
 const INSTALL_FROM_TYPES = ["BIN", "WIP", "RECEIVING"];
@@ -84,6 +85,10 @@ async function evaluate(vehicle, item, qty, fromLoc) {
   const okLoc = !!fromLoc && INSTALL_FROM_TYPES.includes(fromLoc.type);
   add("LOCATION_PERMITTED", okLoc || !!item.installedOn, "LOCATION_NOT_PERMITTED", `Material is in ${fromLoc ? fromLoc.locationCode + " (" + fromLoc.type + ")" : "no location"}, which is not a permitted source for installation.`);
   add("PHYSICALLY_AVAILABLE", !!item.installedOn || (!!bal && bal.quantity >= qty), "INSUFFICIENT_STOCK", `Only ${bal ? bal.quantity : 0} available at ${fromLoc ? fromLoc.locationCode : "the source"}; ${qty} needed.`);
+  if (fromLoc && fromLoc.type === "BIN" && !item.installedOn) {
+    const resv = await reservedQty(item._id); const free = (await binQty(item._id)) - resv;
+    add("NOT_RESERVED", resv === 0 || free >= qty, "RESERVED_STOCK", `Only ${Math.max(0, free)} unit(s) are free; the rest is reserved for a kit. Use the kit instead.`, { overridable: true, overrideKind: "RESERVATION" });
+  }
   return { checks, bomItem, bomRevision: rev, part };
 }
 

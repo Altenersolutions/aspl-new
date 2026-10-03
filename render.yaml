@@ -9,23 +9,13 @@ services:
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NODE_VERSION
-        value: "20"
-      - key: JWT_SECRET
-        generateValue: true
-      - key: MONGO_URI
-        sync: false
-      - key: CORS_ORIGINS
-        sync: false
-      - key: BOOTSTRAP_ADMIN_EMAIL
-        sync: false
-      - key: BOOTSTRAP_ADMIN_PASSWORD
-        sync: false
-      - key: SEED_ON_START
-        value: "true"
-      - key: SEED_DEMO_USERS
-        value: "false"
-      - key: SERVE_LEGACY
-        value: "false"
+      - { key: NODE_ENV, value: production }
+      - { key: NODE_VERSION, value: "20" }
+      - { key: JWT_SECRET, generateValue: true }
+      - { key: MONGO_URI, sync: false }
+      - { key: CORS_ORIGINS, sync: false }
+      - { key: BOOTSTRAP_ADMIN_EMAIL, sync: false }
+      - { key: BOOTSTRAP_ADMIN_PASSWORD, sync: false }
+      - { key: SEED_ON_START, value: "true" }
+      - { key: SEED_DEMO_USERS, value: "false" }
+      - { key: SERVE_LEGACY, value: "false" }

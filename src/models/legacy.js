@@ -16,6 +16,8 @@ const userSchema = new mongoose.Schema({
   active: { type: Boolean, default: true },
   lastLogin: { type: Date, default: null },
   mustChangePassword: { type: Boolean, default: false },
+  totpSecret: { type: String }, totpEnabled: { type: Boolean, default: false }, totpPending: { type: String },
+  tokenVersion: { type: Number, default: 0 },
 });
 userSchema.index({ name: 1, emailId: 1 }, { unique: true });
 

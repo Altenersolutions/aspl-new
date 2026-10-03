@@ -38,6 +38,14 @@ async function describeItem(item, context = {}) {
   else if (item.status === MS.INSTALLED) out.next = { action: "INSTALLED", instruction: `Installed on ${out.installedOnVehicle || "a vehicle"}.` };
   else if (item.status === MS.LEGACY_UNVERIFIED) out.next = { action: "REQUALIFY", instruction: "Legacy stock with unverified tracking data. Run incoming QC to re-qualify." };
 
+  // FIFO hint: older approved stock of the same part still sitting in a bin?
+  if (item.status === MS.APPROVED && atBin) {
+    const older = await MaterialItem.find({ part: item.part, status: MS.APPROVED, createdAt: { $lt: item.createdAt }, _id: { $ne: item._id } }).sort({ createdAt: 1 }).limit(5).lean();
+    for (const o of older) {
+      const ob = (await ledger.balancesOf(o._id)).filter((b) => b.location.type === "BIN");
+      if (ob.length) { out.fifo = { message: "Older stock of this part is available - use it first (FIFO).", older: { id: o._id, serialNumber: o.serialNumber, batchNumber: o.batchNumber, location: ob[0].location.path || ob[0].location.locationCode, quantity: ob[0].quantity } }; break; }
+    }
+  }
   // context: scanning material while a vehicle is loaded in the Assembly screen
   if (context.vehicle) {
     const c = await assembly.check({ vehicle: context.vehicle, materialItemId: String(item._id), quantity: context.quantity || 1 }).catch((e) => ({ error: e.message }));
