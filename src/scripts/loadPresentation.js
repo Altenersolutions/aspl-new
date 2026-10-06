@@ -99,13 +99,13 @@ function build(ctx) {
     out.revisions.push({ _id: OID(), part: d._id, revision: "REV-A", status: "APPROVED", approvedAt: new Date(), changeReason: "Initial revision (BOM load)", effectiveDate: new Date() });
   }
 
-  // BOMs (REV-A, approved)
+  // BOMs (REV-A, DRAFT until the BOM is finalized and approved in the app)
   const partId = ctx.partIdByNumber; // existing parts (--force re-runs)
   for (const model of ["BUZZ", "LITE", "RETROFIT"]) {
     if (ctx.existingBoms.has(model)) continue;
     const b = { _id: OID(), vehicleModel: model, name: `${model} BOM`, currentRevision: "REV-A" }; out.boms.push(b);
     const items = bom.boms[model].map((r) => { const pd = partDoc.get(r.partNumber) || partId.get(r.partNumber); return { part: pd._id, partNumber: r.partNumber, requiredQuantity: r.requiredQuantity, trackingType: (pd.trackingType) || bom.parts.find((x) => x.partNumber === r.partNumber).trackingType, optional: false, installationPosition: r.installationPosition }; });
-    out.bomRevs.push({ _id: OID(), bom: b._id, vehicleModel: model, revision: "REV-A", effectiveDate: new Date(), status: "APPROVED", approvedAt: new Date(), changeReason: "Loaded from BOM.xlsx", items });
+    out.bomRevs.push({ _id: OID(), bom: b._id, vehicleModel: model, revision: "REV-A", effectiveDate: new Date(), status: "DRAFT", changeReason: "Loaded from BOM.xlsx (DRAFT - BOM not finalized; approve when final)", items });
     if (!ctx.existingVehicles.has(model)) {
       const vs = model === "BUZZ" ? [["BUZZ-0001", "UNDER_ASSEMBLY"], ["BUZZ-0002", "PLANNED"]] : model === "LITE" ? [["LITE-0001", "UNDER_ASSEMBLY"], ["LITE-0002", "PLANNED"]] : [["RETRO-0001", "PLANNED"]];
       for (const [num, st] of vs) { const v = { _id: OID(), vehicleNumber: num, model, vehicleType: model, project: "Pilot", currentBOMRevision: "REV-A", status: st }; v.qrCode = codes.vehiclePayload(v); out.vehicles.push(v); }
