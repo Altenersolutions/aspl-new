@@ -26,3 +26,16 @@ On every start the server: gives each existing part an **inventory class** and e
 * Permissions are granular (`docs/API.md` lists the permission each endpoint needs). `scan.use` opens only the scanner.
 
 `npm test` runs 63 end-to-end tests against a MongoDB on 127.0.0.1:27017. `npm run docs` regenerates `docs/API.md`.
+
+## Presentation data (BOM + Capital Assets)
+`src/data/bom.json` and `src/data/assets.json` were generated from `BOM.xlsx` and `Assets_List_2026_SEP.xlsx`. **Read `PRESENTATION_DATA_NOTES.md` first** – it lists what is real, what was derived, and what is demo.
+
+```
+npm run load:presentation -- --dry-run     # build + validate everything, writes nothing, no database needed
+npm run load:presentation                  # load into the database in MONGO_URI  (use a separate TEST database)
+npm run load:presentation -- --wipe-demo   # remove only the demo stock again (invoice numbers starting DEMO-)
+npm run load:presentation -- --no-demo-stock   # real BOM + assets only
+```
+Run it against a fresh database (it refuses to run on one that already has parts unless you add `--force`). It is safe to run twice: existing part numbers are skipped and assets are matched on Asset No.
+
+New: **Capital Assets** register (`/api/assets`, `/api/assets/summary`, `/api/assets/export.csv`, `/api/import/assets`) – separate from stock. View: inventory.view / engineering.view / reports.view. Add / edit / import: admin.master_data.

@@ -67,6 +67,7 @@ const PartMaster = mongoose.model("WmsPart", new Schema({
   devStatus: { type: String, enum: C.DEV_STATUS }, devReviewNote: String, // development components only
   currentRevision: { type: String, default: "REV-A" },
   minStock: { type: Number, default: 0 },
+  unitCost: Number, sourcing: String, // sourcing: Proprietary / Local / Inhouse (from the BOM sheet)
   active: { type: Boolean, default: true },
   legacy: { source: String, legacyId: String }, // provenance of migrated records
 }, { timestamps: true, lastUpdate: true }));

@@ -9,7 +9,8 @@
     "seed": "node src/scripts/seed.js",
     "migrate": "node src/scripts/migrateLegacy.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
-    "docs": "node src/scripts/apidocs.js"
+    "docs": "node src/scripts/apidocs.js",
+    "load:presentation": "node src/scripts/loadPresentation.js"
   },
   "license": "ISC",
   "dependencies": {

@@ -1,6 +1,6 @@
 // Generates docs/API.md from the route files:  npm run docs
 const fs = require("fs"), path = require("path");
-const files = [["routes/workflows.js", "/api"], ["routes/extra.js", "/api"], ["routes/master.js", "/api"], ["routes/auth.js", ""]];
+const files = [["routes/workflows.js", "/api"], ["routes/extra.js", "/api"], ["routes/master.js", "/api"], ["routes/assets.js", "/api"], ["routes/auth.js", ""]];
 const rx = /\b(r|authed|users|router)\.(get|post|put|delete)\(\s*"([^"]+)"([^\n]*)/g;
 const out = ["# API reference (generated)", "", "All endpoints need `Authorization: Bearer <token>` except login. `perm` is the server-side permission required (the backend enforces it; the UI only hides buttons).", "", "| Method | Path | Permission |", "|---|---|---|"];
 for (const [f, base] of files) {

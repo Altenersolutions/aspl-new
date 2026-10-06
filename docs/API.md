@@ -121,6 +121,12 @@ All endpoints need `Authorization: Bearer <token>` except login. `perm` is the s
 | PUT | `/api/roles/:name` | admin.perms |
 | GET | `/api/settings` | signed in |
 | PUT | `/api/settings/:key` | signed in |
+| GET | `/api/assets` | inv.view, eng.view, reports |
+| GET | `/api/assets/summary` | inv.view, eng.view, reports |
+| GET | `/api/assets/export.csv` | inv.view, eng.view, reports |
+| POST | `/api/assets` | admin.master |
+| PUT | `/api/assets/:id` | admin.master |
+| POST | `/api/import/assets` | admin.master |
 | POST | `/login` | signed in |
 | GET | `/api/auth/me` | signed in |
 | POST | `/api/auth/change-password` | signed in |

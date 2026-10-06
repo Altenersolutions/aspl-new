@@ -71,4 +71,18 @@ const FileBlob = mongoose.model("WmsFile", new Schema({
   name: String, mime: String, size: Number, data: Buffer, uploadedBy: oid("InventoryUser"),
 }, { timestamps: true }));
 
-module.exports = { QcTemplate, PurchaseOrder, Reservation, Kit, CycleCount, Ncr, Eco, FileBlob };
+// Capital assets (furniture, tools, machinery, test equipment ...). Separate from stock: assets are never received, issued or installed.
+const CapitalAsset = mongoose.model("WmsCapitalAsset", new Schema({
+  assetNo: { type: String, required: true, unique: true, trim: true },
+  sourceAssetNo: String, // original tag when several items shared one tag in the register (assetNo then carries a /2, /3 ... suffix)
+  description: { type: String, required: true, trim: true },
+  category: { type: String, trim: true },
+  areaCode: { type: String, trim: true }, area: { type: String, trim: true }, location: { type: String, trim: true },
+  quantity: { type: Number, default: 1, min: 0 },
+  make: String, purchaseDate: Date, invoiceNo: String, vendor: String, remarks: String,
+  totalAmount: { type: Number, min: 0 }, // incl. GST, only where the register has it
+  status: { type: String, enum: ["IN_USE", "IN_STORE", "UNDER_REPAIR", "DISPOSED"], default: "IN_USE" },
+}, { timestamps: true }));
+CapitalAsset.schema.index({ area: 1, category: 1 });
+
+module.exports = { QcTemplate, PurchaseOrder, Reservation, Kit, CycleCount, Ncr, Eco, FileBlob, CapitalAsset };

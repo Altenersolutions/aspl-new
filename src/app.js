@@ -10,6 +10,7 @@ const auth = require("./routes/auth");
 const workflows = require("./routes/workflows");
 const master = require("./routes/master");
 const extra = require("./routes/extra");
+const assetsRoutes = require("./routes/assets");
 const legacyRoutes = require("./legacy/routes");
 const legacyActivity = require("./legacy/activityLog");
 
@@ -55,6 +56,7 @@ function createApp() {
   app.use("/api", workflows);
   app.use("/api", master);
   app.use("/api", extra);
+  app.use("/api", assetsRoutes);
   app.use("/", legacyActivity, legacyRoutes);
 
   app.use((req, res) => res.status(404).json({ message: "Not found" }));
