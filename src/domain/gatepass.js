@@ -8,7 +8,7 @@ const { can, P } = require("./permissions");
 const s = (v) => (v == null ? "" : String(v).trim());
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-async function nextRef() { const c = await L.Counter.findOneAndUpdate({ name: "gatepass" }, { $inc: { seq: 1 } }, { new: true, upsert: true }); return `GP-${String(c.seq).padStart(4, "0")}`; }
+async function nextRef() { const c = await L.Counter.findOneAndUpdate({ name: "gatepass" }, { $inc: { seq: 1 } }, { new: true, upsert: true }); return `ASPL-GP-${String(c.seq).padStart(4, "0")}`; }
 async function load(id) {
   const gp = /^[a-f\d]{24}$/i.test(String(id)) ? await L.GatePass.findById(id) : await L.GatePass.findOne({ refNo: String(id) });
   if (!gp) throw notFound("Gate pass", id); return gp;
@@ -28,32 +28,52 @@ async function create(user, body) {
 }
 async function company() {
   const row = await Setting.findOne({ key: "company.name" }).lean();
-  return (row && row.value) || process.env.COMPANY_NAME || "Company Name";
+  return (row && row.value) || process.env.COMPANY_NAME || COMPANY_DEFAULT;
 }
+const COMPANY_DEFAULT = "ALTENER SOLUTIONS OPC PRIVATE LIMITED";
+const COMPANY_ADDRESS = process.env.COMPANY_ADDRESS || "Survey No 81/1, Site No 16, Babanna Layout, Near Delhi Public International School, Mallasandra, Off Hesaraghatta Road, Bengaluru – 560057, Karnataka.";
+const COMPANY_GSTIN = process.env.COMPANY_GSTIN || "29AATCA4078Q1ZK";
+// Layout follows the company's standard MATERIAL GATE PASS (header, Ref/Date, returnable, dispatch mode, items, remark, supplier, "From ASPL", address + GSTIN).
 function renderHtml(gp, { printNo, reprint, printedBy, companyName }) {
-  const rows = (gp.items || []).map((i, n) => `<tr><td class="c">${n + 1}</td><td>${esc(i.name)}</td><td>${esc(i.partNumber)}</td><td>${esc(i.serialBatch)}</td><td class="r">${esc(i.qty)}</td><td class="c">${esc(i.uom || "NOS")}</td></tr>`).join("");
-  const blank = Math.max(0, 8 - (gp.items || []).length);
-  const pad = Array.from({ length: blank }, () => `<tr><td class="c">&nbsp;</td><td></td><td></td><td></td><td></td><td></td></tr>`).join("");
-  const sig = (title, name, when) => `<div class="sig"><div class="line"></div><b>${title}</b><br>Name: ${esc(name) || "&nbsp;"}<br>Signature: ______________________<br>Date / Time: ${esc(when) || "______________"}</div>`;
+  const items = (gp.items || []).length ? gp.items : [{}];
+  const rows = items.map((i, n) => {
+    return `<tr><td class="sl">${i.name ? n + 1 : "-"}</td><td>${esc(i.name) || "-"}</td><td class="q">${esc(i.qty) || "-"}</td></tr>`;
+  }).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(gp.refNo)}</title><style>
-@page{size:A4;margin:14mm}*{box-sizing:border-box}body{font:12px/1.4 Arial,Helvetica,sans-serif;color:#000;margin:0}
-.hd{display:flex;align-items:center;gap:14px;border-bottom:2px solid #000;padding-bottom:8px}.logo{width:70px;height:70px;border:1px dashed #666;display:flex;align-items:center;justify-content:center;font-size:9px;color:#666;text-align:center}
-.co{flex:1}.co h1{margin:0;font-size:20px}.co div{font-size:11px;color:#333}h2{text-align:center;letter-spacing:4px;margin:12px 0;font-size:20px}
-.meta{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;margin-bottom:10px}.meta div{border-bottom:1px solid #999;padding:3px 0}.meta span{color:#555;display:inline-block;min-width:120px}
-table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:5px 6px;vertical-align:top}th{background:#eee}.c{text-align:center}.r{text-align:right}
-.rm{border:1px solid #000;margin-top:10px;padding:6px;min-height:42px}.sigs{display:flex;gap:24px;margin-top:36px}.sig{flex:1;font-size:11px}.sig .line{border-top:1px solid #000;margin-bottom:4px}
-.foot{margin-top:16px;font-size:9px;color:#555;display:flex;justify-content:space-between}.wm{position:fixed;top:45%;left:12%;font-size:90px;color:rgba(200,0,0,.12);transform:rotate(-25deg);pointer-events:none}
-.noprint{margin:10px 0}@media print{.noprint{display:none!important}}</style></head><body>
+@page{size:A4;margin:12mm}*{box-sizing:border-box}
+body{font-family:Roboto,Arial,Helvetica,sans-serif;color:#000;margin:0;font-size:14px;line-height:1.45}
+.page{border:1px solid #555;min-height:270mm;position:relative}
+.co{margin:0;padding:14px 10px 0;text-align:center;font-size:25px;font-weight:700;color:rgba(222,146,34,.87)}
+.ttl{margin:8px 0 0;padding:10px 0 0;border-top:1px solid #555;text-align:center;font-size:22px;font-weight:700}
+.in{padding:0 24px}.top{display:flex;justify-content:space-between;margin-top:26px;font-size:15px}
+.ret{margin-top:16px;font-size:20px;font-weight:700}.ret .dr{margin-left:24px;font-size:16px}.ret .dv{font-weight:400;font-size:16px}
+.h{margin-top:18px;font-size:20px;font-weight:700}.v{font-size:15px}
+table{width:calc(100% - 48px);margin:20px 24px 0;border-collapse:collapse;border:1px solid #555}
+th{background:#eee;text-align:left;font-size:13px;padding:8px 10px;border-bottom:1px solid #555}td{font-size:12px;padding:6px 10px;border-bottom:1px solid #ddd;vertical-align:top}
+.sl{width:72px;white-space:nowrap}.q{width:90px}.sub{font-size:10px;color:#444;margin-top:2px}
+.bx{border:1px solid #555;border-radius:4px;margin:8px 24px 0;padding:14px}.bx .t{font-size:20px;font-weight:700}.bx .val{font-size:16px;margin-top:6px;white-space:pre-wrap}
+.ppl{font-size:10px;color:#333;margin-top:62px}
+.addr{border-top:1px solid #555;margin:10px 24px 0;padding-top:8px;text-align:center;font-size:11px}.gst{text-align:center;font-size:13px;padding-bottom:12px}
+.foot{display:flex;justify-content:space-between;margin-top:6px;font-size:9px;color:#555}
+.wm{position:fixed;top:42%;left:10%;font-size:90px;color:rgba(200,0,0,.12);transform:rotate(-25deg);pointer-events:none}
+.noprint{margin:0 0 10px}@media print{.noprint{display:none!important}}
+</style></head><body>
 ${reprint ? `<div class="wm">REPRINT ${printNo - 1}</div>` : ""}
 <div class="noprint"><button onclick="window.print()">Print</button></div>
-<div class="hd"><div class="logo">LOGO</div><div class="co"><h1>${esc(companyName)}</h1><div>Stores / Dispatch</div></div><div style="text-align:right"><b>${esc(gp.refNo)}</b><br>${reprint ? `REPRINT #${printNo - 1}` : "ORIGINAL"}</div></div>
-<h2>GATE PASS</h2>
-<div class="meta"><div><span>Gate Pass No.</span><b>${esc(gp.refNo)}</b></div><div><span>Date</span>${esc(gp.date)}</div><div><span>To / Supplier</span>${esc(gp.supplier)}</div><div><span>Dispatch Mode</span>${esc(gp.dispatchMode)}</div>
-<div><span>Returnable</span>${gp.returnable ? "Yes" : "No"}</div><div><span>Expected Return Date</span>${gp.returnable ? esc(gp.returnDate) : "—"}</div></div>
-<table><thead><tr><th style="width:36px">Sr No</th><th>Item</th><th>Part No</th><th>Serial / Batch</th><th style="width:60px">Qty</th><th style="width:50px">UOM</th></tr></thead><tbody>${rows}${pad}</tbody></table>
-<div class="rm"><b>Remarks:</b> ${esc(gp.remarks)}</div>
-<div class="sigs">${sig("Prepared By", gp.preparedBy, gp.createdAt ? new Date(gp.createdAt).toLocaleString("en-GB") : "")}${sig("Issued By", gp.issuedBy, "")}${sig("Received By", gp.receivedBy, "")}</div>
-<div class="foot"><span>Printed by ${esc(printedBy)} on ${new Date().toLocaleString("en-GB")}</span><span>Print #${printNo}${reprint ? " (reprint)" : ""}</span></div>
+<div class="page">
+<h1 class="co">${esc(companyName || COMPANY_DEFAULT)}</h1>
+<div class="ttl">MATERIAL GATE PASS</div>
+<div class="in">
+<div class="top"><span><b>Ref No:</b> ${esc(gp.refNo) || "-"}</span><span><b>Date:</b> ${esc(gp.date) || "-"}</span></div>
+<div class="ret">Returnable ${gp.returnable ? "[ ✔ ]" : "[ ✖ ]"}${gp.returnable ? `<span class="dr">Date of Return: <span class="dv">${esc(gp.returnDate) || "-"}</span></span>` : ""}</div>
+<div class="h">Material Dispatch Mode</div><div class="v">${esc(gp.dispatchMode) || "-"}</div>
+</div>
+<table><thead><tr><th>SL NO</th><th>NAME &amp; FULL DESCRIPTION OF THE ITEM</th><th>QTY</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="bx" style="min-height:80px"><div class="t">Remark:</div><div class="val">${esc(gp.remarks) || "-"}</div></div>
+<div class="bx" style="min-height:110px"><div class="t">Supplier Details:</div><div class="val">${esc(gp.supplier) || "-"}</div></div>
+<div class="bx" style="min-height:130px"><div class="t" style="font-weight:400">From ASPL:</div></div>
+<div class="addr">${esc(COMPANY_ADDRESS)}</div><div class="gst">GSTIN: ${esc(COMPANY_GSTIN)}</div>
+</div>
 </body></html>`;
 }
 // First print needs gatepass.print; every later print is a REPRINT and needs gatepass.reprint plus a reason. All are audited.
