@@ -31,7 +31,7 @@ test("gate pass: create needs gatepass.create and valid content", async () => {
   assert.equal((await api("post", "/api/gatepasses", "store", { ...sample, returnDate: "" })).body.error, "VALIDATION");
   assert.equal((await api("post", "/api/gatepasses", "store", { ...sample, items: [{ name: "x", qty: "0" }] })).body.error, "VALIDATION");
   const ok = await api("post", "/api/gatepasses", "store", sample); assert.equal(ok.status, 201, JSON.stringify(ok.body)); gp = ok.body;
-  assert.match(gp.refNo, /^GP-\d{4}$/); assert.equal(gp.preparedBy, "Store User"); assert.equal(gp.status, "ISSUED"); assert.equal(gp.printCount, 0); assert.equal(gp.items[0].serialBatch, "SN-10042");
+  assert.match(gp.refNo, /^ASPL-GP-\d{4}$/); assert.equal(gp.preparedBy, "Store User"); assert.equal(gp.status, "ISSUED"); assert.equal(gp.printCount, 0); assert.equal(gp.items[0].serialBatch, "SN-10042");
   const a = await M.AuditLog.findOne({ action: "GATE_PASS_CREATED" }); assert.equal(a.userName, "Store User"); assert.equal(a.entityLabel, gp.refNo); assert.ok(a.at);
   assert.equal((await L.GatePass.findById(gp._id)).lastAction, "GATE_PASS_CREATED"); // Last Update
 });
