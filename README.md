@@ -1,12 +1,11 @@
-# Inventory WMS – Backend API (Node + Express + MongoDB)
+# Inventory, QC & Assembly Control System – Backend API (v3)
 
-Upload this folder's contents to GitHub, then connect the repo to Render.
+Node + Express + MongoDB. Upload this folder's contents to GitHub, connect it to Render.
 
-## Render settings (Web Service)
+## Render
 Build `npm install --omit=dev` · Start `npm start` · Health check `/api/health`
 
-## Environment variables
-| Key | Value |
+| Env var | Value |
 |---|---|
 | `NODE_ENV` | `production` |
 | `NODE_VERSION` | `20` |
@@ -14,12 +13,16 @@ Build `npm install --omit=dev` · Start `npm start` · Health check `/api/health
 | `MONGO_URI` | Atlas string ending `/inventory?retryWrites=true&w=majority` |
 | `CORS_ORIGINS` | your Netlify URL, no trailing slash |
 | `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | first admin (only used while no users exist) |
-| `SEED_ON_START` | `true` once to create sample master data, then `false` |
+| `SEED_ON_START` | `true` once for sample master data, then `false` |
 | `SEED_DEMO_USERS` | `false` |
-| `SERVE_LEGACY` | `false` |
-| `ALERT_*` (optional) | alert thresholds, see `.env.example` |
+| `COMPANY_NAME` | printed in the Gate Pass header (or set Setting `company.name`) |
 
-## What's in v2.1
-Scan engine · put-away guidance · receiving (mandatory invoice, optional PO matching) · QC state machine with per-part QC templates · NCR/CAPA · handover · BOM revisions + engineering change orders · assembly validation, installation/removal history · kitting & reservations (FIFO) · cycle counts · recall query & quarantine · build book · alerts & analytics · global search · CSV import/export · QC photo/PDF storage · TOTP two-factor + session revocation · append-only ledger/audit.
+## Upgrading an existing database (automatic, safe to repeat)
+On every start the server: gives each existing part an **inventory class** and explicit QC / FIFO / BOM / revision flags (consumables → General, development items → Development/ACTIVE, everything else → Production); translates saved role permissions from the old names (`material.*`, `engineering.manage`, `admin.master`) to the new granular ones and drops unknown names; and gives existing records a **Last Update** (their creation). Nothing is deleted. Existing gate passes are kept and can be printed.
 
-`docs/API.md` lists every endpoint with its permission (`npm run docs` regenerates it). `npm test` runs 36 end-to-end tests (needs MongoDB on 127.0.0.1:27017). `.github/workflows/test.yml` runs them on every push – create it in GitHub with Add file → Create new file (dot-folders are skipped by drag-and-drop).
+## Concepts
+* **Inventory class** (GENERAL / PRODUCTION / DEVELOPMENT) is what the stock *is*; **tracking type** (SERIAL / BATCH / QUANTITY) is how it is counted.
+* GENERAL: receive → store → issue → return (no QC, BOM or vehicle needed). PRODUCTION: invoice → incoming QC → put-away → FIFO → reserve → issue/handover → BOM + revision validation → install → QC → traceability. DEVELOPMENT: draft → engineering review → approved → active; revisions with image history.
+* Permissions are granular (`docs/API.md` lists the permission each endpoint needs). `scan.use` opens only the scanner.
+
+`npm test` runs 63 end-to-end tests against a MongoDB on 127.0.0.1:27017. `npm run docs` regenerates `docs/API.md`.

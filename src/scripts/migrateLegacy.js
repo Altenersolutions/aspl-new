@@ -8,6 +8,7 @@ const M = require("../models");
 const codes = require("../domain/codes");
 const { ensureBaseData } = require("./baseData");
 const { atomic } = require("../domain/uow");
+const { defaultsFor } = require("../domain/partRules");
 
 const CAT = { EE: "ELECTRICAL", ELECTRICAL: "ELECTRICAL", ME: "MECHANICAL", MECHANICAL: "MECHANICAL", EC: "ELECTRONICS", ELECTRONICS: "ELECTRONICS" };
 const mapCat = (c, fallback = "OTHER") => CAT[String(c || "").trim().toUpperCase()] || fallback;
@@ -28,7 +29,7 @@ async function run({ apply = false, log = console.log } = {}) {
   let legacyBin = await M.Location.findOne({ locationCode: "LEGACY-STOCK" });
   if (!legacyBin && apply) { legacyBin = await M.Location.create({ locationCode: "LEGACY-STOCK", name: "Legacy Stock (unverified)", type: "BIN", path: "Legacy Stock (unverified)" }); legacyBin.qrCode = codes.locationPayload(legacyBin); await legacyBin.save(); }
 
-  async function ensurePart(doc, source, fallbackCat, tracking) {
+  async function ensurePart(doc, source, fallbackCat, tracking, cls) {
     const partNumber = sanitize(doc.partId).toUpperCase();
     if (!partNumber) { report.warnings.push(`${source} ${doc._id}: no partId - skipped`); return null; }
     let p = await M.PartMaster.findOne({ partNumber });
@@ -36,14 +37,15 @@ async function run({ apply = false, log = console.log } = {}) {
     report.parts++;
     if (!apply) return { _id: null, partNumber, trackingType: tracking };
     const sup = await supplierFor(doc.supplier);
-    p = await M.PartMaster.create({ partNumber, partName: sanitize(doc.partName) || partNumber, description: sanitize(doc.specification), category: mapCat(doc.catagory, fallbackCat), subCategory: sanitize(doc.catagory), unit: sanitize(doc.SI) || "NOS", trackingType: tracking, supplier: sup && sup._id, vehicleCompatibility: doc.vehicles || [], legacy: { source, legacyId: String(doc._id) } });
+    const base = { category: mapCat(doc.catagory, fallbackCat), trackingType: tracking, inventoryClass: cls }; const flags = defaultsFor(base);
+    p = await M.PartMaster.create({ ...flags, ...(cls === "DEVELOPMENT" && { devStatus: "ACTIVE" }), inventoryClass: cls, partNumber, partName: sanitize(doc.partName) || partNumber, description: sanitize(doc.specification), category: mapCat(doc.catagory, fallbackCat), subCategory: sanitize(doc.catagory), unit: sanitize(doc.SI) || "NOS", trackingType: tracking, supplier: sup && sup._id, vehicleCompatibility: doc.vehicles || [], legacy: { source, legacyId: String(doc._id) } });
     await M.PartRevision.create({ part: p._id, revision: p.currentRevision, status: "APPROVED", changeReason: "Migrated from legacy prototype", effectiveDate: new Date() });
     return p;
   }
 
   // 1. legacy Parts (stock list) -> PartMaster + unverified legacy stock
   for (const doc of await require("../models/legacy").Parts.find().lean()) {
-    const p = await ensurePart(doc, "InventoryParts", "OTHER", "QUANTITY");
+    const p = await ensurePart(doc, "InventoryParts", "OTHER", "QUANTITY", /^CONS/i.test(sanitize(doc.catagory)) ? "GENERAL" : "PRODUCTION");
     if (!p) { report.partsSkipped++; continue; }
     const qty = Number(doc.quantity) || 0;
     if (qty > 0 && p._id) {
@@ -57,8 +59,8 @@ async function run({ apply = false, log = console.log } = {}) {
     } else if (qty < 0) report.warnings.push(`Parts ${doc.partId}: negative legacy quantity ${qty} not migrated`);
   }
   // 2. Consumables and Development items -> PartMaster only (no stock rows existed)
-  for (const doc of await require("../models/legacy").Con.find().lean()) await ensurePart(doc, "InventoryCon", "CONSUMABLE", "QUANTITY");
-  for (const doc of await require("../models/legacy").Dev.find().lean()) await ensurePart(doc, "InventoryDev", "DEVELOPMENT", "QUANTITY");
+  for (const doc of await require("../models/legacy").Con.find().lean()) await ensurePart(doc, "InventoryCon", "CONSUMABLE", "QUANTITY", "GENERAL");
+  for (const doc of await require("../models/legacy").Dev.find().lean()) await ensurePart(doc, "InventoryDev", "DEVELOPMENT", "QUANTITY", "DEVELOPMENT");
 
   // 3. legacy BOM -> per-vehicle model BOM, revision LEGACY-A (DRAFT: engineering must approve before use)
   const legacyBom = await require("../models/legacy").Bom.find().lean();
@@ -70,7 +72,7 @@ async function run({ apply = false, log = console.log } = {}) {
     if (bom && (await M.BOMRevision.exists({ bom: bom._id, revision: "LEGACY-A" }))) continue;
     const items = [];
     for (const b of rows) {
-      const p = await ensurePart(b, "InventoryBom", "OTHER", "QUANTITY");
+      const p = await ensurePart(b, "InventoryBom", "OTHER", "QUANTITY", "PRODUCTION");
       if (!p || !p._id) { report.bomItems++; continue; }
       items.push({ part: p._id, partNumber: p.partNumber, requiredQuantity: Math.max(1, Math.round(Number(b.quantity) || 1)), trackingType: p.trackingType });
       report.bomItems++;

@@ -24,7 +24,7 @@ async function receive(partNumber, opts = {}) {
   return { receiptId: res.body.receiptId, items: res.body.items };
 }
 const qc = (receiptId, itemId, result, remarks) => api("post", `/api/receiving/${receiptId}/qc`, "qc", { materialItemId: itemId, result, remarks });
-async function approved(partNumber, opts = {}) { const r = await receive(partNumber, opts); const it = r.items[0]; const q = await qc(r.receiptId, it.id, "PASS"); assert.equal(q.status, 200, JSON.stringify(q.body)); return { ...it, receiptId: r.receiptId }; }
+async function approved(partNumber, opts = {}) { const r = await receive(partNumber, opts); const it = r.items[0]; if (it.status !== "APPROVED") { const q = await qc(r.receiptId, it.id, "PASS"); assert.equal(q.status, 200, JSON.stringify(q.body)); } return { ...it, receiptId: r.receiptId }; }
 async function stored(partNumber, opts = {}) {
   const it = await approved(partNumber, opts);
   const plan = (await api("get", `/api/materials/${it.id}/put-away-plan`, "store")).body;
@@ -40,6 +40,9 @@ before(async () => {
   app = createApp();
   for (const [k, e] of Object.entries({ admin: "admin@example.com", store: "store@example.com", qc: "qc@example.com", assembly: "assembly@example.com", supervisor: "supervisor@example.com", engineer: "engineer@example.com" })) tok[k] = await login(e);
   supplierId = String((await M.Supplier.findOne({ code: "ACME" }))._id);
+  // A production part that is NOT FIFO-controlled, so quantity/handover tests are not affected by older lots left by other tests.
+  const np = await api("post", "/api/parts", "engineer", { partNumber: "NOFIFO-1", partName: "No-FIFO test relay", inventoryClass: "PRODUCTION", category: "ELECTRICAL", trackingType: "BATCH", defaultLocationCode: "E-12", fifoApplicable: false });
+  assert.equal(np.status, 201, JSON.stringify(np.body));
 });
 after(async () => { await mongoose.connection.dropDatabase(); await mongoose.disconnect(); });
 
@@ -125,7 +128,7 @@ test("T6 QC rejection: rejected serial cannot be issued or installed", async () 
 });
 
 test("T7 issue creates a transaction; negative stock and concurrent over-issue are prevented", async () => {
-  const it = await stored("RELAY-001", { quantity: 40, line: { batchNumber: "B-ISS" } });
+  const it = await stored("NOFIFO-1", { quantity: 40, line: { batchNumber: "B-ISS" } });
   const ok = await api("post", "/api/inventory/issue", "store", { materialItemId: it.id, quantity: 10, fromLocation: "E-12", purpose: "Line 1" });
   assert.equal(ok.status, 200); assert.equal(ok.body.transaction.transactionType, "ISSUE");
   assert.equal(await balanceAt(it.id, "E-12"), 30); assert.equal(await balanceAt(it.id, "WIP-FLOOR"), 10);
@@ -142,7 +145,7 @@ test("T7 issue creates a transaction; negative stock and concurrent over-issue a
 let assemblyUser;
 test("T8 handover: issue -> handover -> recipient acknowledges", async () => {
   assemblyUser = String((await M.User.findOne({ emailId: "assembly@example.com" }))._id);
-  const it = await stored("RELAY-001", { quantity: 10, line: { batchNumber: "B-HO" } });
+  const it = await stored("NOFIFO-1", { quantity: 10, line: { batchNumber: "B-HO" } });
   const h = await api("post", "/api/handover", "store", { materialItemId: it.id, quantity: 4, toUserId: assemblyUser, fromLocation: "E-12", purpose: "Harness build", department: "Assembly" });
   assert.equal(h.status, 201); assert.equal(h.body.status, "PENDING");
   assert.equal(await balanceAt(it.id, "IN-TRANSIT"), 4); assert.equal(await balanceAt(it.id, "E-12"), 6);
@@ -155,7 +158,7 @@ test("T8 handover: issue -> handover -> recipient acknowledges", async () => {
 });
 
 test("T9 refusal requires a reason and returns stock to the source", async () => {
-  const it = await stored("RELAY-001", { quantity: 10, line: { batchNumber: "B-REF" } });
+  const it = await stored("NOFIFO-1", { quantity: 10, line: { batchNumber: "B-REF" } });
   const h = await api("post", "/api/handover", "store", { materialItemId: it.id, quantity: 3, toUserId: assemblyUser, fromLocation: "E-12", purpose: "Test" });
   const noReason = await api("post", `/api/handover/${h.body._id}/refuse`, "assembly", {});
   assert.equal(noReason.status, 400); assert.equal(noReason.body.error, "REFUSAL_REASON_REQUIRED");
@@ -229,8 +232,7 @@ test("T13 revision control: BOM REV-C requires CTRL-001 REV-C, REV-B unit is blo
   assert.equal(ov.status, 200); const inst = await M.Installation.findOne({ materialItem: it.id, active: true });
   assert.equal(inst.partRevision, "REV-B"); assert.equal(inst.bomRequiredRevision, "REV-C"); assert.equal(inst.override, true);
   // approved BOM revisions are immutable; changes need a new revision
-  assert.equal((await api("post", "/api/bom/BUZZ/revisions/REV-C/approve", "engineer")).status, 403); // engineers draft, admins approve
-  const ap = await api("post", "/api/bom/BUZZ/revisions/REV-C/approve", "admin");
+  const ap = await api("post", "/api/bom/BUZZ/revisions/REV-C/approve", "engineer");
   assert.equal(ap.status, 409);
 });
 

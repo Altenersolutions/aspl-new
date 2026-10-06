@@ -9,6 +9,8 @@ const { getItem, getLocation } = require("./materials");
 const { nextId } = require("./counters");
 const { can, P } = require("./permissions");
 const { reservedQty, binQty } = require("./reservations");
+const fifo = require("./fifo");
+const { guarded, logOverride } = require("./overrides");
 const s = (v) => (v == null ? "" : String(v).trim());
 
 async function create(user, body) {
@@ -22,10 +24,12 @@ async function create(user, body) {
   if (!["BIN", "WIP"].includes(from.type)) throw new BusinessError("INVALID_SOURCE", "Handover must originate from a storage bin or the WIP/issued area.");
   const qty = Number(body.quantity);
   const transit = await findSpecial("TRANSIT");
+  const fifoErr = from.type === "BIN" ? await guarded(user, body.override, () => fifo.assertFifo(item)) : null;
   if (from.type === "BIN") { const resv = await reservedQty(item._id); const free = (await binQty(item._id)) - resv; if (resv > 0 && qty > free) throw new BusinessError("RESERVED_STOCK", `${Math.max(0, free)} unit(s) are free; the rest is reserved for a kit.`, { details: { free } }); }
   return atomic(async (ctx) => {
     const handoverId = await nextId("handover", "HO", 6);
-    const txn = await ledger.post(ctx, user, { type: "HANDOVER", item, qty, from: from._id, to: transit._id, fromStatus: item.status, toStatus: item.status, reason: `Handover ${handoverId} to ${to.name}: ${body.purpose}`, refType: "Handover", refId: handoverId });
+    const txn = await ledger.post(ctx, user, { type: "HANDOVER", item, qty, from: from._id, to: transit._id, fromStatus: item.status, toStatus: item.status, reason: `Handover ${handoverId} to ${to.name}: ${body.purpose}`, refType: "Handover", refId: handoverId, override: !!fifoErr });
+    if (fifoErr) await logOverride(ctx, user, fifoErr, body.override, { operation: "HANDOVER", originalValue: { olderStock: fifoErr.details.suggested }, newValue: { handedOver: item.serialNumber || item.batchNumber }, referenceTransaction: txn.transactionId, entityType: "MaterialItem", entityId: item._id, entityLabel: item.serialNumber || item.batchNumber });
     const h = await ctx.create(Handover, {
       handoverId, materialItem: item._id, part: item.part, partNumber: item.partNumber, serialNumber: item.serialNumber, batchNumber: item.batchNumber,
       quantity: qty, fromUser: user.id, toUser: to._id, fromUserName: user.name, toUserName: to.name, fromLocation: from._id,

@@ -57,4 +57,45 @@ async function search(term) {
   ]);
   return { parts, materials, vehicles, locations, suppliers, pos };
 }
-module.exports = { alerts, analytics, search };
+// ---- role workbenches: what THIS kind of user has to do right now ----
+async function workbench(kind, user) {
+  const sec = (key, title, items, link, hint) => ({ key, title, count: items.length, items: items.slice(0, 12), link, hint });
+  const mat = (i) => ({ label: `${i.partNumber} ${i.serialNumber || i.batchNumber || ""}`, sub: `${i.status}${i.invoiceNo ? " · inv " + i.invoiceNo : ""}`, link: `#/scan/${encodeURIComponent(i.qrCode || i.serialNumber || i.batchNumber)}` });
+  const myHo = (await M.Handover.find({ toUser: user.id, status: "PENDING" }).lean()).map((h) => ({ label: `${h.handoverId}: ${h.partNumber} ${h.serialNumber || h.batchNumber || ""} × ${h.quantity}`, sub: `from ${h.fromUserName}`, link: "#/handover" }));
+  const out = [];
+  if (kind === "store") {
+    const rec = await M.Location.findOne({ type: "RECEIVING" });
+    const wait = rec ? (await M.StockBalance.find({ location: rec._id, quantity: { $gt: 0 } }).populate("materialItem").lean()).filter((r) => r.materialItem && r.materialItem.status === MS.APPROVED).map((r) => mat(r.materialItem)) : [];
+    out.push(sec("putaway", "Waiting to be put away", wait, "#/putaway", "Approved stock still in the Receiving area – scan it and follow the location guidance."));
+    out.push(sec("ho", "Handovers waiting for you", myHo, "#/handover"));
+    out.push(sec("kits", "Kits to pick and issue", (await M.Kit.find({ status: { $in: ["READY", "PARTIAL"] } }).lean()).map((k) => ({ label: `${k.kitId} · ${k.vehicleNumber}`, sub: k.status, link: "#/kits" })), "#/kits"));
+    out.push(sec("po", "Open purchase orders", (await M.PurchaseOrder.find({ status: { $in: ["OPEN", "PARTIAL"] } }).populate("supplier", "name").lean()).map((p) => ({ label: p.poNo, sub: p.supplier && p.supplier.name, link: "#/po" })), "#/po"));
+    out.push(sec("qcwait", "Received – waiting for incoming QC", (await M.MaterialItem.find({ status: MS.PENDING_INCOMING_QC }).sort({ createdAt: 1 }).limit(50).lean()).map(mat), "#/inventory?status=PENDING_INCOMING_QC"));
+    const a = await alerts(); const low = a.alerts.find((x) => x.type === "LOW_STOCK"); out.push(sec("low", "Below minimum stock", low ? low.items.map((t) => ({ label: t, link: "#/parts" })) : [], "#/parts"));
+  } else if (kind === "qc") {
+    const q = async (status) => (await M.MaterialItem.find({ status }).sort({ createdAt: 1 }).limit(60).lean()).map(mat);
+    out.push(sec("incoming", "Incoming QC", await q(MS.PENDING_INCOMING_QC), "#/qc-incoming", "Oldest first. Open an item to record PASS / HOLD / FAIL."));
+    out.push(sec("hold", "On hold", await q(MS.HOLD), "#/qc-retest"));
+    out.push(sec("retest", "Re-test / QC required", [...(await q(MS.PENDING_RETEST)), ...(await q(MS.QC_REQUIRED))], "#/qc-retest"));
+    out.push(sec("rework", "Rejected / in rework", [...(await q(MS.REJECTED)), ...(await q(MS.REWORK))], "#/qc-rework"));
+    out.push(sec("veh", "Vehicles awaiting final QC", (await M.Vehicle.find({ status: { $in: ["ASSEMBLED", "FINAL_QC"] } }).lean()).map((v) => ({ label: v.vehicleNumber, sub: v.status, link: `#/assembly/${encodeURIComponent(v.vehicleNumber)}` })), "#/vehicles"));
+    out.push(sec("ncr", "Open non-conformances", (await M.Ncr.find({ status: { $ne: "CLOSED" } }).lean()).map((n) => ({ label: `${n.ncrNo} ${n.partNumber}`, sub: n.status, link: "#/ncr" })), "#/ncr"));
+    out.push(sec("ho", "Handovers waiting for you", myHo, "#/handover"));
+  } else if (kind === "assembly") {
+    const vs = await M.Vehicle.find({ status: { $in: ["PLANNED", "UNDER_ASSEMBLY", "ASSEMBLED"] } }).lean(); const rows = [];
+    for (const v of vs) { const view = await assembly.vehicleView(v); const m = view.items.filter((i) => !i.optional); const need = m.reduce((t, i) => t + i.required, 0), have = m.reduce((t, i) => t + Math.min(i.installed, i.required), 0); rows.push({ label: v.vehicleNumber, sub: `${v.status} · ${need ? Math.round(100 * have / need) : 0}% of BOM installed`, link: `#/assembly/${encodeURIComponent(v.vehicleNumber)}` }); }
+    out.push(sec("veh", "Vehicles in build", rows, "#/vehicles", "Open a vehicle to scan components."));
+    out.push(sec("ho", "Handovers waiting for you", myHo, "#/handover"));
+    out.push(sec("kits", "Issued kits (material on the floor)", (await M.Kit.find({ status: "ISSUED" }).sort({ issuedAt: -1 }).limit(20).lean()).map((k) => ({ label: `${k.kitId} · ${k.vehicleNumber}`, sub: "issued", link: `#/assembly/${encodeURIComponent(k.vehicleNumber)}` })), "#/kits"));
+    out.push(sec("recent", "Recent installations", (await M.Installation.find({ active: true }).sort({ installedAt: -1 }).limit(10).lean()).map((i) => ({ label: `${i.vehicleNumber}: ${i.partNumber} ${i.serialNumber || i.batchNumber || ""}`, sub: i.installedByName, link: "#/installs" })), "#/installs"));
+  } else if (kind === "engineering") {
+    const dev = (st) => M.PartMaster.find({ inventoryClass: "DEVELOPMENT", devStatus: st }).lean().then((a) => a.map((p) => ({ label: `${p.partNumber} ${p.partName}`, sub: `${p.currentRevision}${p.subCategory ? " · " + p.subCategory : ""}`, link: "#/devcomp" })));
+    out.push(sec("review", "Development components awaiting review", await dev("ENGINEERING_REVIEW"), "#/devcomp", "Engineering approval needed."));
+    out.push(sec("draft", "Development components in draft", await dev("DRAFT"), "#/devcomp"));
+    out.push(sec("rev", "Draft part revisions", (await M.PartRevision.find({ status: "DRAFT" }).populate("part", "partNumber").lean()).map((r) => ({ label: `${r.part && r.part.partNumber} ${r.revision}`, sub: r.changeReason, link: "#/parts" })), "#/parts"));
+    out.push(sec("bom", "Draft BOM revisions", (await M.BOMRevision.find({ status: "DRAFT" }).lean()).map((b) => ({ label: `${b.vehicleModel} ${b.revision}`, sub: b.changeReason, link: "#/bom" })), "#/bom"));
+    out.push(sec("eco", "Engineering changes pending", (await M.Eco.find({ status: "DRAFT" }).lean()).map((e) => ({ label: `${e.ecoNo} ${e.partNumber}`, sub: `${e.fromRevision} → ${e.toRevision}`, link: "#/eco" })), "#/eco"));
+  }
+  return { kind, sections: out };
+}
+module.exports = { alerts, analytics, search, workbench };

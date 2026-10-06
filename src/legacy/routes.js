@@ -4,7 +4,9 @@
 const express = require("express");
 const L = require("../models/legacy");
 const { AuditLog } = require("../models");
-const { wrap, requireRole } = require("../middleware/common");
+const { wrap, requirePerm } = require("../middleware/common");
+const { P, canAny } = require("../domain/permissions");
+const gatepass = require("../domain/gatepass");
 const { norm } = require("../domain/permissions");
 
 const r = express.Router();
@@ -12,6 +14,15 @@ const ADD_ROLES = ["admin", "store", "store assistant", "purchase executive"];  
 const EDIT_ROLES = ["admin", "store"];                                           // may edit / delete (add-only roles cannot)
 const READ_ONLY = ["viewer"];
 const { cleanVehicles } = L;
+
+// Permission gate (server-side): reading needs a stock/engineering view permission, writing needs an inventory or engineering write permission.
+r.use(wrap(async (req, res, next) => {
+  if (/^\/(gatepass|activity-log)/.test(req.path)) return next(); // these have their own, specific permissions below
+  const read = ["GET", "HEAD", "OPTIONS"].includes(req.method);
+  const ok = await canAny(req.user.role, read ? [P.INV_VIEW, P.ENG_VIEW] : [P.RECEIVE, P.ADJUST, P.ENG_PARTS, P.ENG_BOM, P.ENG_DEV]);
+  if (!ok) return res.status(403).json({ message: "You do not have permission to do this." });
+  next();
+}));
 
 // Server-side write gate (legacy comment: two roles are add-only, never edit/delete).
 r.use((req, res, next) => {
@@ -144,10 +155,14 @@ r.delete("/deleteIncomming", wrap(async (req, res) => { const { _id } = req.quer
 r.get("/notifications", wrap(async (req, res) => { const { dept } = req.query; res.json(dept === "Admin" ? await L.Msg.find() : await L.Msg.find({ to: String(dept) })); }));
 r.post("/notifications", wrap(async (req, res) => { const m = new L.Msg(pick(req.body, L.Msg)); await m.save(); res.status(201).json(m); }));
 
-// ---- Gate pass / activity log (admin only, as before) ----
-r.get("/gatepass/next-ref", requireRole("admin"), wrap(async (req, res) => { const c = await L.Counter.findOneAndUpdate({ name: "gatepass" }, { $inc: { seq: 1 } }, { new: true, upsert: true }); res.json({ refNo: `GP-${String(c.seq).padStart(4, "0")}` }); }));
-r.get("/gatepass", requireRole("admin"), wrap(async (req, res) => res.json(await L.GatePass.find().sort({ createdAt: -1 }))));
-r.post("/gatepass", requireRole("admin"), wrap(async (req, res) => { const p = new L.GatePass(pick(req.body, L.GatePass)); await p.save(); res.status(201).json(p); }));
-r.get("/activity-log", requireRole("admin"), wrap(async (req, res) => res.json(await L.ActivityLog.find().sort({ createdAt: -1 }).limit(500))));
+// ---- Gate pass (same InventoryGatePass collection, now under gatepass.* permissions) / legacy activity log (audit.view) ----
+r.get("/gatepass/next-ref", requirePerm(P.GP_CREATE), wrap(async (req, res) => res.json({ refNo: await gatepass.nextRef() })));
+r.get("/gatepass", requirePerm(P.GP_VIEW), wrap(async (req, res) => res.json(await L.GatePass.find().sort({ createdAt: -1 }))));
+r.post("/gatepass", requirePerm(P.GP_CREATE), wrap(async (req, res) => {
+  const b = req.body || {};
+  const items = (b.items || []).map((i) => ({ name: i.name, partNumber: i.partNumber, serialBatch: i.serialBatch, qty: String(i.qty ?? ""), uom: i.uom }));
+  res.status(201).json(await gatepass.create(req.user, { date: b.date, supplier: b.supplier, dispatchMode: b.dispatchMode, returnable: !!b.returnable, returnDate: b.returnDate, remarks: b.remarks, issuedBy: b.issuedBy, receivedBy: b.receivedBy, items }));
+}));
+r.get("/activity-log", requirePerm(P.AUDIT), wrap(async (req, res) => res.json(await L.ActivityLog.find().sort({ createdAt: -1 }).limit(500))));
 
 module.exports = r;

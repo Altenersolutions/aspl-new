@@ -3,7 +3,7 @@ const { ZodError } = require("zod");
 const config = require("../config");
 const { User } = require("../models");
 const { BusinessError, forbidden } = require("../domain/errors");
-const { can, permissionsFor, norm } = require("../domain/permissions");
+const { can, canAny, permissionsFor, norm } = require("../domain/permissions");
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -20,15 +20,11 @@ const authenticate = wrap(async (req, res, next) => {
   next();
 });
 
+// Any ONE of the listed permissions is enough. Enforced on the server for every protected route.
 const requirePerm = (...perms) => wrap(async (req, res, next) => {
-  for (const p of perms) if (await can(req.user.role, p)) return next();
+  if (await canAny(req.user.role, perms)) return next();
   throw forbidden();
 });
-const requireRole = (...roles) => (req, res, next) => {
-  if (!roles.map(norm).includes(norm(req.user && req.user.role))) return res.status(403).json({ message: "You do not have permission to do this." });
-  next();
-};
-
 const validate = (schema, where = "body") => (req, res, next) => {
   const r = schema.safeParse(req[where]);
   if (!r.success) return res.status(400).json({ error: "VALIDATION", message: r.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; "), details: r.error.issues });
@@ -46,4 +42,4 @@ function errorHandler(err, req, res, next) { // eslint-disable-line
   console.error(err);
   res.status(500).json({ error: "SERVER_ERROR", message: "Server error" });
 }
-module.exports = { wrap, authenticate, requirePerm, requireRole, validate, errorHandler, permissionsFor };
+module.exports = { wrap, authenticate, requirePerm, validate, errorHandler, permissionsFor };

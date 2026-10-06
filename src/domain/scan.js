@@ -17,8 +17,8 @@ async function describeItem(item, context = {}) {
   const atReceiving = rows.some((r) => r.location.type === "RECEIVING");
   const atBin = rows.some((r) => r.location.type === "BIN");
   const actions = sm.allowedActions(item, { atReceiving, atBin });
-  const out = { kind: "MATERIAL", item: { id: item._id, partNumber: item.partNumber, partRevision: item.partRevision, serialNumber: item.serialNumber, batchNumber: item.batchNumber, trackingType: item.trackingType, quantity: item.quantity, status: item.status, invoiceNo: item.invoiceNo, installedOn: item.installedOn, legacy: item.legacy, qrCode: item.qrCode },
-    part: part && { id: part._id, partNumber: part.partNumber, partName: part.partName, description: part.description, category: part.category, unit: part.unit },
+  const out = { kind: "MATERIAL", item: { id: item._id, partNumber: item.partNumber, partRevision: item.partRevision, serialNumber: item.serialNumber, batchNumber: item.batchNumber, trackingType: item.trackingType, quantity: item.quantity, status: item.status, invoiceNo: item.invoiceNo, installedOn: item.installedOn, legacy: item.legacy, qrCode: item.qrCode, lastAction: item.lastAction, lastUpdatedByName: item.lastUpdatedByName, lastUpdatedAt: item.lastUpdatedAt },
+    part: part && { id: part._id, partNumber: part.partNumber, partName: part.partName, description: part.description, category: part.category, unit: part.unit, inventoryClass: require("./partRules").rules(part).inventoryClass, trackingType: part.trackingType },
     badge: badgeFor(item.status), balances, allowedActions: actions, next: null };
   if (item.installedOn) { const v = await Vehicle.findById(item.installedOn).lean(); out.installedOnVehicle = v && v.vehicleNumber; }
 
@@ -30,7 +30,10 @@ async function describeItem(item, context = {}) {
       const dest = await resolveDestination(part, recQty);
       out.next = { action: "PUT_AWAY", quantity: recQty, instruction: "PUT THIS MATERIAL IN:", destination: { code: dest.locationCode, path: dest.path || (await locationPath(dest)), qr: codes.locationPayload(dest) } };
     } catch (e) { out.next = { action: "PUT_AWAY", instruction: e.message, error: e.code }; }
-  } else if (item.status === MS.APPROVED && atBin) out.next = { action: "AVAILABLE", instruction: "Stored and available. Choose Issue, Transfer, Handover or Install." };
+  } else if (item.status === MS.APPROVED && atBin) {
+    const cls = out.part && out.part.inventoryClass;
+    out.next = { action: "AVAILABLE", instruction: cls === "GENERAL" ? "Stored and available. Issue it, return it or transfer it." : cls === "DEVELOPMENT" ? "Stored and available for development use. Issue, hand over or transfer it." : "Stored and available. Issue (oldest stock first), hand over, transfer or install." };
+  }
   else if (item.status === MS.HOLD) out.next = { action: "RETEST", instruction: "On QC HOLD. Not available for issue or installation until re-tested." };
   else if (item.status === MS.REJECTED) out.next = { action: "REWORK_OR_RETURN", instruction: "REJECTED. Send to rework, return to supplier or scrap." };
   else if (item.status === MS.REWORK) out.next = { action: "REWORK_DONE", instruction: "In rework. Mark rework complete to send for re-test." };

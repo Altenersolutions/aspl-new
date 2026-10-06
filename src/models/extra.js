@@ -1,4 +1,6 @@
 const mongoose = require("mongoose");
+const { lastUpdate } = require("./legacy");
+mongoose.plugin((schema) => { if (schema.options.lastUpdate) lastUpdate(schema); });
 const { Schema } = mongoose;
 const C = require("../domain/constants");
 const oid = (ref) => ({ type: Schema.Types.ObjectId, ref });
@@ -34,7 +36,7 @@ const Kit = mongoose.model("WmsKit", new Schema({
   status: { type: String, enum: ["READY", "PARTIAL", "ISSUED", "CANCELLED"], default: "READY" },
   lines: [{ _id: false, part: oid("WmsPart"), partNumber: String, required: Number, reserved: Number, shortage: Number }],
   createdBy: oid("InventoryUser"), createdByName: String, issuedAt: Date, issuedBy: oid("InventoryUser"),
-}, { timestamps: true }));
+}, { timestamps: true, lastUpdate: true }));
 
 const CycleCount = mongoose.model("WmsCycleCount", new Schema({
   countId: { type: String, unique: true },

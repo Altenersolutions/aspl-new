@@ -7,7 +7,7 @@ const { recordOverride, audit } = require("./audit");
 async function assertOverrideAllowed(user, err, override) {
   if (!err.overridable) return false;
   if (!override) return false;
-  if (!(await can(user.role, P.OVERRIDE))) throw forbidden("Only an administrator can override this control.");
+  if (!(await can(user.role, err.overridePerm || P.OVERRIDE))) throw forbidden("You are not authorised to override this control.");
   if (!override.reason || String(override.reason).trim().length < 5) {
     throw new BusinessError("OVERRIDE_REASON_REQUIRED", "A reason (min 5 characters) is required for an admin override.", { status: 400 });
   }

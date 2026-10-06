@@ -9,6 +9,9 @@ const { guarded, logOverride } = require("./overrides");
 const { findSpecial } = require("./locations");
 const { getItem } = require("./materials");
 const { reservedQty, binQty } = require("./reservations");
+const fifo = require("./fifo");
+const { rules } = require("./partRules");
+const { P } = require("./permissions");
 
 const s = (v) => (v == null ? "" : String(v).trim());
 const INSTALL_FROM_TYPES = ["BIN", "WIP", "RECEIVING"];
@@ -49,6 +52,7 @@ async function evaluate(vehicle, item, qty, fromLoc) {
   const part = await PartMaster.findById(item.part);
   const rev = await getBomRevision(vehicle);
   const bomItem = rev && rev.items.find((i) => String(i.part) === String(item.part));
+  const pr = part ? rules(part) : { bomControlled: true, revisionControlled: true, isDevelopment: false };
 
   add("VEHICLE_OPEN", !["SCRAPPED", "RELEASED"].includes(vehicle.status), "VEHICLE_CLOSED", `Vehicle ${vehicle.vehicleNumber} is ${vehicle.status} and cannot be modified.`);
   add("PART_VALID", !!(part && part.active), "PART_INVALID", "Part is unknown or inactive.");
@@ -58,12 +62,14 @@ async function evaluate(vehicle, item, qty, fromLoc) {
     status === MS.REJECTED ? "Material is REJECTED and cannot be installed." : status === MS.HOLD ? "Material is on QC HOLD and cannot be installed." : `Material status is ${status}; only APPROVED material can be installed.`);
   add("QUANTITY_VALID", qty > 0 && (item.trackingType !== "SERIAL" || qty === 1), "INVALID_QUANTITY", "Serialised components install one at a time.");
 
-  const compat = !part || !part.vehicleCompatibility.length || part.vehicleCompatibility.includes(vehicle.vehicleType);
+  if (pr.isDevelopment) add("DEV_ACTIVE", !part || (part.devStatus || "ACTIVE") === "ACTIVE", "DEV_NOT_ACTIVE", `${item.partNumber} is a development component in status ${part && part.devStatus}; it must be ACTIVE.`);
+  // BOM / revision / compatibility rules apply to BOM-controlled (production) parts. GENERAL and DEVELOPMENT parts are not forced through them.
+  const compat = !pr.bomControlled || !part || !part.vehicleCompatibility.length || part.vehicleCompatibility.includes(vehicle.vehicleType);
   add("VEHICLE_COMPATIBLE", compat, "INCOMPATIBLE_VEHICLE", `${item.partNumber} is not compatible with ${vehicle.vehicleType} vehicles.`, { overridable: true, overrideKind: "BOM_MISMATCH" });
 
-  add("ON_BOM", !!bomItem, "BOM_MISMATCH", `BOM MISMATCH: ${item.partNumber} is not valid for ${vehicle.model} BOM ${vehicle.currentBOMRevision || (rev && rev.revision) || "(none)"}.`, { overridable: true, overrideKind: "BOM_MISMATCH" });
-  if (bomItem) {
-    const revOk = !bomItem.requiredRevision || bomItem.requiredRevision === item.partRevision;
+  add("ON_BOM", !pr.bomControlled || !!bomItem, "BOM_MISMATCH", `BOM MISMATCH: ${item.partNumber} is not valid for ${vehicle.model} BOM ${vehicle.currentBOMRevision || (rev && rev.revision) || "(none)"}.`, { overridable: true, overrideKind: "BOM_MISMATCH" });
+  if (bomItem && pr.bomControlled) {
+    const revOk = !pr.revisionControlled || !bomItem.requiredRevision || bomItem.requiredRevision === item.partRevision;
     add("REVISION", revOk, "REVISION_MISMATCH", `REVISION MISMATCH: BOM ${rev.revision} requires ${item.partNumber} ${bomItem.requiredRevision}, this unit is ${item.partRevision}.`, { overridable: true, overrideKind: "BOM_MISMATCH" });
     const have = await installedQty(vehicle._id, item.part);
     add("QUANTITY_LIMIT", have + qty <= bomItem.requiredQuantity, "QUANTITY_EXCEEDED", `BOM requires ${bomItem.requiredQuantity} x ${item.partNumber}; ${have} already installed, adding ${qty} would exceed it.`, { overridable: true, overrideKind: "BOM_MISMATCH" });
@@ -88,6 +94,10 @@ async function evaluate(vehicle, item, qty, fromLoc) {
   if (fromLoc && fromLoc.type === "BIN" && !item.installedOn) {
     const resv = await reservedQty(item._id); const free = (await binQty(item._id)) - resv;
     add("NOT_RESERVED", resv === 0 || free >= qty, "RESERVED_STOCK", `Only ${Math.max(0, free)} unit(s) are free; the rest is reserved for a kit. Use the kit instead.`, { overridable: true, overrideKind: "RESERVATION" });
+  }
+  if (fromLoc && fromLoc.type === "BIN" && !item.installedOn && part && rules(part).fifo) {
+    const older = await fifo.olderEligible(item, part);
+    add("FIFO", !older, "FIFO_VIOLATION", older ? `FIFO: older stock of ${item.partNumber} must be used first (${older.serialNumber || older.batchNumber} at ${older.location || "a bin"}).` : "", { overridable: true, overrideKind: "FIFO_OVERRIDE", overridePerm: P.FIFO_OVERRIDE, suggested: older });
   }
   return { checks, bomItem, bomRevision: rev, part };
 }
@@ -122,7 +132,7 @@ async function install(user, body) {
   const failed = checks.filter((c) => !c.ok);
   let overrideErr = null; const overridesUsed = [];
   for (const f of failed) {
-    const e = new BusinessError(f.code, f.message, { overridable: true, overrideKind: f.overrideKind, details: { checks, currentVehicle: f.currentVehicle } });
+    const e = new BusinessError(f.code, f.message, { overridable: true, overrideKind: f.overrideKind, overridePerm: f.overridePerm, details: { checks, currentVehicle: f.currentVehicle } });
     const used = await guarded(user, body.override, async () => { throw e; });
     overridesUsed.push(e);
     overrideErr = overrideErr || e;
@@ -154,14 +164,14 @@ async function install(user, body) {
       bomRevision: bomRevision && bomRevision.revision, bomRequiredRevision: bomItem && bomItem.requiredRevision, installationPosition: bomItem && bomItem.installationPosition,
       installedBy: user.id, installedByName: user.name, installTransaction: txn._id, override: overridden,
     });
-    if (vehicle.status === "PLANNED") await ctx.set(Vehicle, vehicle._id, { status: "UNDER_ASSEMBLY" });
+    if (vehicle.status === "PLANNED") { await ctx.set(Vehicle, vehicle._id, { status: "UNDER_ASSEMBLY" }); await audit(ctx, user, { action: "VEHICLE_STATUS_CHANGED", entityType: "Vehicle", entityId: vehicle._id, entityLabel: vehicle.vehicleNumber, before: { status: "PLANNED" }, after: { status: "UNDER_ASSEMBLY" }, reference: "first installation" }); }
     await audit(ctx, user, { action: "COMPONENT_INSTALLED", entityType: "Vehicle", entityId: vehicle._id, entityLabel: vehicle.vehicleNumber, where: vehicle.vehicleNumber, after: { part: item.partNumber, serial: item.serialNumber, batch: item.batchNumber, revision: item.partRevision, quantity: qty }, reference: txn.transactionId, override: overridden });
     for (const e of overridesUsed) await logOverride(ctx, user, e, body.override, { operation: "INSTALL", originalValue: { rule: e.code, message: e.message }, newValue: { vehicle: vehicle.vehicleNumber, part: item.partNumber, serial: item.serialNumber }, referenceTransaction: txn.transactionId, entityType: "Vehicle", entityId: vehicle._id, entityLabel: vehicle.vehicleNumber });
     return { ok: true, message: "INSTALLED", transaction: txn, installation: inst, overrideUsed: overridden };
   }).then(async (r) => {
     // vehicle completeness (read after commit)
     const view = await vehicleView(await Vehicle.findById(vehicle._id));
-    if (view.complete && view.vehicle.status === "UNDER_ASSEMBLY") await Vehicle.updateOne({ _id: vehicle._id }, { status: "ASSEMBLED" });
+    if (view.complete && view.vehicle.status === "UNDER_ASSEMBLY") { await Vehicle.updateOne({ _id: vehicle._id }, { status: "ASSEMBLED" }); await require("./audit").audit(null, user, { action: "VEHICLE_STATUS_CHANGED", entityType: "Vehicle", entityId: vehicle._id, entityLabel: vehicle.vehicleNumber, before: { status: "UNDER_ASSEMBLY" }, after: { status: "ASSEMBLED" }, reference: "all mandatory BOM items installed" }); }
     return { ...r, progress: view.items, vehicleComplete: view.complete };
   });
 }
@@ -193,7 +203,7 @@ async function remove(user, body) {
       await ctx.create(Installation, { ...inst.toObject({ depopulate: true }), _id: undefined, quantity: inst.quantity - qty, splitFrom: inst._id, active: true, removedAt: undefined, removedBy: undefined, removalReason: undefined, removeTransaction: undefined, createdAt: undefined, updatedAt: undefined });
     }
     if (isSerial) { sm.assertTransition(item.status, d.status, "REMOVE"); await ctx.set(MaterialItem, item._id, { status: d.status, installedOn: null }); }
-    if (["ASSEMBLED"].includes(vehicle.status)) await ctx.set(Vehicle, vehicle._id, { status: "UNDER_ASSEMBLY" });
+    if (["ASSEMBLED"].includes(vehicle.status)) { await ctx.set(Vehicle, vehicle._id, { status: "UNDER_ASSEMBLY" }); await audit(ctx, user, { action: "VEHICLE_STATUS_CHANGED", entityType: "Vehicle", entityId: vehicle._id, entityLabel: vehicle.vehicleNumber, before: { status: "ASSEMBLED" }, after: { status: "UNDER_ASSEMBLY" }, reference: "component removed" }); }
     await audit(ctx, user, { action: "COMPONENT_REMOVED", entityType: "Vehicle", entityId: vehicle._id, entityLabel: vehicle.vehicleNumber, reason: body.reason, before: { installed: true, status: item.status }, after: { disposition: body.disposition, status: isSerial ? d.status : item.status, quantity: qty }, reference: txn.transactionId, override: !!used });
     if (used) await logOverride(ctx, user, released, body.override, { operation: "REMOVE", originalValue: { vehicleStatus: vehicle.status }, newValue: { removed: item.serialNumber || item.batchNumber }, referenceTransaction: txn.transactionId, entityType: "Vehicle", entityId: vehicle._id, entityLabel: vehicle.vehicleNumber });
     return { ok: true, transaction: txn, status: isSerial ? d.status : item.status, next: body.disposition === "AVAILABLE" ? "PUT_AWAY" : "QC" };

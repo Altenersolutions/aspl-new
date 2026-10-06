@@ -8,78 +8,87 @@ All endpoints need `Authorization: Bearer <token>` except login. `perm` is the s
 | POST | `/api/locations/scan` | scan |
 | GET | `/api/qr` | signed in |
 | POST | `/api/receiving` | receive |
-| GET | `/api/receiving` | scan |
-| GET | `/api/receiving/:id` | scan |
-| POST | `/api/receiving/:id/qc` | qc |
-| GET | `/api/qc` | scan |
-| GET | `/api/qc/queue` | scan |
-| GET | `/api/materials` | scan |
-| GET | `/api/materials/awaiting-putaway` | scan |
-| GET | `/api/materials/:id` | scan |
-| GET | `/api/materials/:id/put-away-plan` | scan |
+| GET | `/api/receiving` | inv.view |
+| GET | `/api/receiving/:id` | inv.view |
+| POST | `/api/receiving/:id/qc` | qc.perform |
+| GET | `/api/qc` | qc.history, qc.view |
+| GET | `/api/qc/queue` | qc.view, inv.view |
+| GET | `/api/materials` | inv.view, qc.view, asm.view |
+| GET | `/api/materials/awaiting-putaway` | inv.view |
+| GET | `/api/materials/:id` | scan, inv.view, qc.view, asm.view |
+| GET | `/api/materials/:id/put-away-plan` | inv.view, putaway |
 | POST | `/api/materials/:id/put-away` | putaway |
-| POST | `/api/materials/:id/disposition` | qc |
+| POST | `/api/materials/:id/disposition` | qc.perform |
 | POST | `/api/materials/:id/status-override` | override |
-| GET | `/api/materials/:id/label` | scan |
+| GET | `/api/materials/:id/label` | inv.view |
 | POST | `/api/inventory/issue` | issue |
 | POST | `/api/inventory/return` | return |
 | POST | `/api/inventory/transfer` | transfer |
 | POST | `/api/inventory/adjust` | adjust |
-| GET | `/api/inventory/transactions` | reports |
-| GET | `/api/inventory/stock` | reports |
-| POST | `/api/handover` | handover |
-| GET | `/api/handover` | scan |
-| POST | `/api/handover/:id/acknowledge` | handover.respond |
-| POST | `/api/handover/:id/refuse` | handover.respond |
-| POST | `/api/vehicles/scan` | scan |
-| GET | `/api/vehicles` | scan |
-| GET | `/api/vehicles/:id` | scan |
-| POST | `/api/vehicles/:id/check` | scan |
+| GET | `/api/inventory/transactions` | txn.view, reports |
+| GET | `/api/inventory/stock` | inv.view |
+| POST | `/api/handover` | ho.create |
+| GET | `/api/handover` | ho.view |
+| POST | `/api/handover/:id/acknowledge` | ho.respond |
+| POST | `/api/handover/:id/refuse` | ho.respond |
+| POST | `/api/vehicles/scan` | veh.view, asm.view |
+| GET | `/api/vehicles` | veh.view, asm.view |
+| GET | `/api/vehicles/:id` | veh.view, asm.view |
+| POST | `/api/vehicles/:id/check` | asm.view, install |
 | POST | `/api/vehicles/:id/install` | install |
 | POST | `/api/vehicles/:id/remove` | remove |
-| GET | `/api/installations` | scan |
-| GET | `/api/traceability/vehicle/:id` | reports |
-| GET | `/api/traceability/component/:id` | reports |
-| GET | `/api/traceability/serial/:serial` | reports |
+| GET | `/api/installations` | asm.view, veh.trace |
+| GET | `/api/traceability/vehicle/:id` | veh.trace, reports |
+| GET | `/api/traceability/component/:id` | veh.trace, reports, inv.view |
+| GET | `/api/traceability/serial/:serial` | veh.trace, reports, inv.view |
 | GET | `/api/audit` | audit |
 | GET | `/api/overrides` | audit |
-| GET | `/api/dashboard` | scan |
-| GET | `/api/search` | scan |
-| GET | `/api/alerts` | scan |
+| GET | `/api/dashboard` | dashboard |
+| POST | `/api/inventory/issue-fifo` | issue |
+| GET | `/api/inventory/fifo-next` | inv.view |
+| GET | `/api/vehicles/:id/timeline` | veh.trace, veh.view, asm.view |
+| GET | `/api/workbench/:kind` | signed in |
+| GET | `/api/gatepasses` | gp.view |
+| GET | `/api/gatepasses/next-ref` | gp.create |
+| GET | `/api/gatepasses/:id` | gp.view |
+| POST | `/api/gatepasses` | gp.create |
+| POST | `/api/gatepasses/:id/print` | gp.print, gp.reprint |
+| GET | `/api/search` | signed in |
+| GET | `/api/alerts` | inv.view, qc.view, asm.view, eng.view, dashboard |
 | GET | `/api/analytics` | reports |
-| GET | `/api/purchase-orders` | scan |
+| GET | `/api/purchase-orders` | inv.view |
 | POST | `/api/purchase-orders` | receive |
 | POST | `/api/purchase-orders/:id/cancel` | receive |
-| GET | `/api/parts/:id/qc-template` | scan |
-| GET | `/api/materials/:id/qc-template` | scan |
-| PUT | `/api/parts/:id/qc-template` | engineering |
-| GET | `/api/ncr` | scan |
-| PUT | `/api/ncr/:id` | qc |
-| POST | `/api/ncr/:id/close` | qc |
-| GET | `/api/eco` | scan |
-| GET | `/api/eco/impact` | scan |
-| POST | `/api/eco` | engineering |
-| POST | `/api/eco/:id/approve` | bom.approve |
-| POST | `/api/eco/:id/reject` | bom.approve |
-| GET | `/api/kits` | scan |
-| POST | `/api/kits` | issue |
-| GET | `/api/kits/:id` | scan |
+| GET | `/api/parts/:id/qc-template` | qc.view, eng.view |
+| GET | `/api/materials/:id/qc-template` | qc.perform, qc.view |
+| PUT | `/api/parts/:id/qc-template` | eng.parts |
+| GET | `/api/ncr` | qc.view |
+| PUT | `/api/ncr/:id` | qc.perform |
+| POST | `/api/ncr/:id/close` | qc.approve |
+| GET | `/api/eco` | eng.view |
+| GET | `/api/eco/impact` | eng.view |
+| POST | `/api/eco` | eng.rev |
+| POST | `/api/eco/:id/approve` | eng.approve |
+| POST | `/api/eco/:id/reject` | eng.approve |
+| GET | `/api/kits` | inv.view, asm.view |
+| POST | `/api/kits` | reserve |
+| GET | `/api/kits/:id` | inv.view, asm.view |
 | POST | `/api/kits/:id/issue` | issue |
-| POST | `/api/kits/:id/cancel` | issue |
-| GET | `/api/counts` | scan |
+| POST | `/api/kits/:id/cancel` | reserve |
+| GET | `/api/counts` | inv.view |
 | POST | `/api/counts` | transfer |
-| GET | `/api/counts/:id` | scan |
+| GET | `/api/counts/:id` | inv.view |
 | POST | `/api/counts/:id/submit` | transfer |
 | POST | `/api/counts/:id/approve` | adjust |
 | POST | `/api/counts/:id/cancel` | transfer |
-| POST | `/api/recall/query` | reports |
-| POST | `/api/recall/quarantine` | qc |
-| GET | `/api/traceability/vehicle/:id/build-book` | reports |
-| POST | `/api/files` | scan |
-| GET | `/api/files/:id` | scan |
+| POST | `/api/recall/query` | qc.view, reports |
+| POST | `/api/recall/quarantine` | qc.hold |
+| GET | `/api/traceability/vehicle/:id/build-book` | veh.trace, reports |
+| POST | `/api/files` | qc.perform, eng.dev, eng.parts, gp.create |
+| GET | `/api/files/:id` | inv.view, qc.view, eng.view, asm.view |
 | GET | `/api/export/:kind` | reports |
-| POST | `/api/import/parts` | engineering |
-| POST | `/api/import/bom` | engineering |
+| POST | `/api/import/parts` | eng.parts |
+| POST | `/api/import/bom` | eng.bom |
 | POST | `/api/import/opening-stock` | admin.master |
 | GET | `/api/suppliers` | signed in |
 | POST | `/api/suppliers` | admin.master, receive |
@@ -92,17 +101,24 @@ All endpoints need `Authorization: Bearer <token>` except login. `perm` is the s
 | POST | `/api/parts` | signed in |
 | PUT | `/api/parts/:id` | signed in |
 | GET | `/api/parts/:id/revisions` | signed in |
-| POST | `/api/parts/:id/revisions` | signed in |
-| POST | `/api/parts/:id/revisions/:rev/approve` | bom.approve |
+| POST | `/api/parts/:id/revisions` | eng.rev, eng.dev |
+| POST | `/api/parts/:id/revisions/:rev/approve` | eng.approve |
+| GET | `/api/dev-subcategories` | signed in |
+| POST | `/api/parts/:id/dev/submit` | eng.dev |
+| POST | `/api/parts/:id/dev/approve` | eng.approve |
+| POST | `/api/parts/:id/dev/reject` | eng.approve |
+| POST | `/api/parts/:id/dev/activate` | eng.dev |
+| GET | `/api/parts/:id/images` | signed in |
+| POST | `/api/parts/:id/images` | eng.dev |
 | GET | `/api/bom` | signed in |
-| POST | `/api/bom` | signed in |
+| POST | `/api/bom` | eng.bom |
 | GET | `/api/bom/:model/revisions` | signed in |
-| POST | `/api/bom/:model/revisions` | signed in |
-| POST | `/api/bom/:model/revisions/:rev/approve` | bom.approve |
-| POST | `/api/vehicles` | signed in |
-| POST | `/api/vehicles/:id/bom-revision` | signed in |
-| GET | `/api/roles` | admin.users |
-| PUT | `/api/roles/:name` | admin.users |
+| POST | `/api/bom/:model/revisions` | eng.bom |
+| POST | `/api/bom/:model/revisions/:rev/approve` | eng.approve |
+| POST | `/api/vehicles` | veh.create |
+| POST | `/api/vehicles/:id/bom-revision` | veh.edit |
+| GET | `/api/roles` | admin.roles, admin.perms |
+| PUT | `/api/roles/:name` | admin.perms |
 | GET | `/api/settings` | signed in |
 | PUT | `/api/settings/:key` | signed in |
 | POST | `/login` | signed in |

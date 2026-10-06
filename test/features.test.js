@@ -18,7 +18,7 @@ async function receive(partNumber, line = {}, extra = {}) {
   const res = await api("post", "/api/receiving", extra.as || "store", { supplierId: extra.supplierId || supplierId, invoiceNo: inv(), lines: [{ partNumber, quantity: 1, ...line }], ...extra.body });
   assert.equal(res.status, 201, JSON.stringify(res.body)); return { receiptId: res.body.receiptId, items: res.body.items, body: res.body };
 }
-async function approved(partNumber, line = {}) { const r = await receive(partNumber, line); const q = await api("post", "/api/qc/incoming", "qc", { materialItemId: r.items[0].id, result: "PASS" }); assert.equal(q.status, 200, JSON.stringify(q.body)); return r.items[0]; }
+async function approved(partNumber, line = {}) { const r = await receive(partNumber, line); if (r.items[0].status !== "APPROVED") { const q = await api("post", "/api/qc/incoming", "qc", { materialItemId: r.items[0].id, result: "PASS" }); assert.equal(q.status, 200, JSON.stringify(q.body)); } return r.items[0]; }
 async function stored(partNumber, line = {}) {
   const it = await approved(partNumber, line); const plan = (await api("get", `/api/materials/${it.id}/put-away-plan`, "store")).body;
   const r = await api("post", `/api/materials/${it.id}/put-away`, "store", { scannedLocation: plan.destination.code }); assert.equal(r.status, 200, JSON.stringify(r.body)); return it;
@@ -29,6 +29,8 @@ before(async () => {
   await db.connect(`mongodb://127.0.0.1:27017/wms_feat_${stamp}`); await seed({ quiet: true }); app = createApp();
   for (const [k, e] of Object.entries({ admin: "admin@example.com", store: "store@example.com", qc: "qc@example.com", assembly: "assembly@example.com", supervisor: "supervisor@example.com", engineer: "engineer@example.com" })) tok[k] = await login(e);
   supplierId = String((await M.Supplier.findOne({ code: "ACME" }))._id);
+  const np = await api("post", "/api/parts", "engineer", { partNumber: "NOFIFO-1", partName: "No-FIFO test part", inventoryClass: "PRODUCTION", category: "ELECTRICAL", trackingType: "BATCH", defaultLocationCode: "E-12", fifoApplicable: false });
+  assert.equal(np.status, 201, JSON.stringify(np.body));
 });
 after(async () => { await mongoose.connection.dropDatabase(); await mongoose.disconnect(); });
 
@@ -78,7 +80,7 @@ test("ECO: impact analysis, only approvers decide, new receipts take the new rev
   const old = await stored("CTRL-LITE", { serialNumbers: ["SN-ECO-1"] });
   const imp = (await api("get", "/api/eco/impact?partNumber=CTRL-LITE&toRevision=REV-B", "engineer")).body; assert.ok(imp.stockUnitsOnOtherRevisions >= 1);
   const eco = await api("post", "/api/eco", "engineer", { partNumber: "CTRL-LITE", toRevision: "REV-B", reason: "Connector change", drawingNumber: "DWG-9" }); assert.equal(eco.status, 201, JSON.stringify(eco.body));
-  assert.equal((await api("post", `/api/eco/${eco.body._id}/approve`, "engineer", {})).status, 403);
+  assert.equal((await api("post", `/api/eco/${eco.body._id}/approve`, "store", {})).status, 403); // store cannot approve engineering changes
   assert.equal((await api("post", `/api/eco/${eco.body._id}/reject`, "admin", {})).status, 400); // reason required
   assert.equal((await api("post", `/api/eco/${eco.body._id}/approve`, "admin", { note: "OK" })).status, 200);
   assert.equal((await M.PartMaster.findOne({ partNumber: "CTRL-LITE" })).currentRevision, "REV-B");
@@ -119,7 +121,7 @@ test("kitting: shortage blocked, FIFO reservation, reserved stock protected, kit
 });
 
 test("cycle count: variances need approval, adjustment posted with audit, stale counts rejected, only admin approves", async () => {
-  const it = await stored("RELAY-001", { quantity: 10, batchNumber: "B-CC" });
+  const it = await stored("NOFIFO-1", { quantity: 10, batchNumber: "B-CC" });
   const c = await api("post", "/api/counts", "store", { location: "E-12" }); assert.equal(c.status, 201, JSON.stringify(c.body));
   assert.equal((await api("post", "/api/counts", "store", { location: "E-12" })).body.error, "COUNT_ALREADY_OPEN");
   const counts = c.body.lines.map((l) => ({ materialItemId: l.materialItem, countedQty: String(l.materialItem) === it.id ? l.systemQty - 2 : l.systemQty }));
@@ -142,10 +144,12 @@ test("recall: query by batch shows stock and vehicles; quarantine holds free sto
   const relay = await stored("RELAY-001", { quantity: 6, batchNumber: "B-RECALL" });
   assert.equal((await api("post", "/api/vehicles/BUZZ-0042/install", "assembly", { materialItemId: relay.id, quantity: 1 })).status, 200);
   const ctrl = await stored("CTRL-001", { serialNumbers: ["SN-RECALL-1"], revision: "REV-C" });
-  assert.equal((await api("post", "/api/vehicles/BUZZ-0042/install", "assembly", { materialItemId: ctrl.id })).status, 200);
-  const q = (await api("post", "/api/recall/query", "store", { batchNumber: "B-RECALL" })).body;
+  // older controller SN-KIT-2 is still free in a bin, so FIFO blocks this install; a supervisor may override with a reason
+  assert.equal((await api("post", "/api/vehicles/BUZZ-0042/install", "assembly", { materialItemId: ctrl.id })).body.error, "FIFO_VIOLATION");
+  assert.equal((await api("post", "/api/vehicles/BUZZ-0042/install", "supervisor", { materialItemId: ctrl.id, override: { reason: "Older unit reserved for retrofit build", confirm: true } })).status, 200);
+  const q = (await api("post", "/api/recall/query", "qc", { batchNumber: "B-RECALL" })).body;
   assert.equal(q.count, 1); assert.equal(q.onHand, 5); assert.equal(q.installedQty, 1); assert.deepEqual(q.vehicles.map((v) => v.vehicleNumber), ["BUZZ-0042"]);
-  assert.equal((await api("post", "/api/recall/query", "store", {})).status, 400); // criteria required
+  assert.equal((await api("post", "/api/recall/query", "qc", {})).status, 400); // criteria required
   assert.equal((await api("post", "/api/recall/quarantine", "store", { criteria: { batchNumber: "B-RECALL" }, reason: "Supplier recall", confirm: true })).status, 403);
   assert.equal((await api("post", "/api/recall/quarantine", "qc", { criteria: { batchNumber: "B-RECALL" }, reason: "x", confirm: true })).status, 400);
   const go = await api("post", "/api/recall/quarantine", "qc", { criteria: { batchNumber: "B-RECALL" }, reason: "Supplier recall notice 77", confirm: true }); assert.equal(go.status, 200, JSON.stringify(go.body));
@@ -184,7 +188,7 @@ test("pagination headers, global search, alerts and analytics", async () => {
   assert.equal((await api("get", "/api/search?q=B-RECALL", "store")).body.materials.length, 1);
   const al = (await api("get", "/api/alerts", "store")).body; assert.equal(typeof al.total, "number"); assert.ok(Array.isArray(al.alerts));
   const an = (await api("get", "/api/analytics", "admin")).body; assert.ok(an.supplierQuality.find((x) => x.supplier.includes("Acme"))); assert.ok(an.supplierQuality[0].rejectionRate >= 0); assert.ok(an.stockAgeing["0-30 d"] >= 0); assert.ok(an.vehicleProgress.length >= 1);
-  assert.equal((await api("get", "/api/analytics", "assembly")).status, 200); // assembly has reports.view
+  assert.equal((await api("get", "/api/analytics", "assembly")).status, 403); // assembly has no reports.view
 });
 
 test("two-factor login, password change and sign-out-everywhere invalidate sessions", async () => {
@@ -215,7 +219,7 @@ test("file storage: images/PDFs only, size-limited, retrievable only when signed
 });
 
 test("scan engine shows a FIFO hint when older approved stock is still in a bin", async () => {
-  assert.equal((await api("post", "/api/parts", "engineer", { partNumber: "FIFO-PART", partName: "Fifo part", category: "CONSUMABLE", trackingType: "QUANTITY", defaultLocationCode: "M-04" })).status, 201);
+  assert.equal((await api("post", "/api/parts", "engineer", { partNumber: "FIFO-PART", partName: "Fifo part", inventoryClass: "PRODUCTION", category: "CONSUMABLE", trackingType: "QUANTITY", defaultLocationCode: "M-04" })).status, 201);
   const older = await stored("FIFO-PART", { quantity: 7 }); const newer = await stored("FIFO-PART", { quantity: 9 });
   const s = (await api("post", "/api/scan", "store", { code: `MAT|FIFO-PART|I=${newer.id}` })).body; assert.ok(s.fifo); assert.equal(s.fifo.older.id, older.id);
   const s2 = (await api("post", "/api/scan", "store", { code: `MAT|FIFO-PART|I=${older.id}` })).body; assert.equal(s2.fifo, undefined);

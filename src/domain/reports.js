@@ -16,7 +16,12 @@ async function materialTrace(item) {
     item.supplier ? Supplier.findById(item.supplier).lean() : null,
     StockBalance.find({ materialItem: item._id, quantity: { $gt: 0 } }).populate("location", "locationCode path type").lean(),
   ]);
-  return { item, receipt: receipt && { receiptNo: receipt.receiptNo, invoiceNo: receipt.invoiceNo, createdAt: receipt.createdAt }, supplier: supplier && { code: supplier.code, name: supplier.name },
+  const byVehicle = {};
+  for (const i of installs) { const k = i.vehicleNumber; byVehicle[k] = byVehicle[k] || { vehicle: k, installed: 0, removed: 0 }; if (i.active) byVehicle[k].installed += i.quantity; else byVehicle[k].removed += i.quantity; }
+  const onHand = balances.filter((b) => b.location.type !== "VEHICLE").reduce((t, b) => t + b.quantity, 0);
+  const consumed = Object.values(byVehicle).reduce((t, v) => t + v.installed, 0);
+  const allocation = { total: item.quantity, onHand, installedTotal: consumed, byVehicle: Object.values(byVehicle) };
+  return { allocation, item, receipt: receipt && { receiptNo: receipt.receiptNo, invoiceNo: receipt.invoiceNo, createdAt: receipt.createdAt }, supplier: supplier && { code: supplier.code, name: supplier.name },
     currentLocations: balances.map((b) => ({ code: b.location.locationCode, path: b.location.path, type: b.location.type, quantity: b.quantity })), transactions: txns, qc: qcs, handovers, installations: installs };
 }
 
@@ -103,3 +108,28 @@ async function dashboard() {
   };
 }
 module.exports = { materialTrace, componentTrace, vehicleTrace, materialSearch, transactions, auditTrail, inventoryReport, dashboard, stockByPart };
+
+// Everything that happened to a vehicle/chassis, oldest first.
+async function vehicleTimeline(ref) {
+  const vehicle = await assembly.getVehicle(ref);
+  const installs = await Installation.find({ vehicle: vehicle._id }).lean();
+  const itemIds = installs.map((i) => i.materialItem);
+  const [aud, qc, items, hos, txns, kits] = await Promise.all([
+    AuditLog.find({ entityType: "Vehicle", entityId: String(vehicle._id) }).lean(),
+    QCInspection.find({ $or: [{ vehicle: vehicle._id }, { materialItem: { $in: itemIds } }] }).populate("inspector", "name").lean(),
+    MaterialItem.find({ _id: { $in: itemIds } }).lean(),
+    Handover.find({ materialItem: { $in: itemIds } }).lean(),
+    InventoryTransaction.find({ materialItem: { $in: itemIds }, transactionType: { $in: ["REWORK", "RETEST"] } }).lean(),
+    require("../models").Kit.find({ vehicle: vehicle._id }).lean(),
+  ]);
+  const ev = []; const label = (x) => `${x.partNumber || ""} ${x.serialNumber || x.batchNumber || ""}`.trim();
+  aud.forEach((a) => ev.push({ at: a.at, type: a.action, text: [a.action.replace(/_/g, " ").toLowerCase(), a.entityLabel, a.after && a.after.part ? `${a.after.part} ${a.after.serial || a.after.batch || ""}` : "", a.reason].filter(Boolean).join(" · "), user: a.userName, override: a.override }));
+  qc.forEach((q) => ev.push({ at: q.createdAt, type: `QC_${q.inspectionType}`, text: `${q.inspectionType.toLowerCase()} QC ${q.result}${q.serialNumber || q.batchNumber ? " · " + (q.serialNumber || q.batchNumber) : ""}${q.remarks ? " · " + q.remarks : ""}`, user: q.inspector && q.inspector.name }));
+  items.forEach((i) => ev.push({ at: i.createdAt, type: "RECEIVED", text: `component received: ${label(i)}${i.invoiceNo ? " · invoice " + i.invoiceNo : ""}`, user: "" }));
+  hos.forEach((h) => { ev.push({ at: h.handedOverAt, type: "HANDOVER", text: `handover ${h.handoverId}: ${label(h)} × ${h.quantity} to ${h.toUserName}`, user: h.fromUserName }); if (h.acknowledgedAt) ev.push({ at: h.acknowledgedAt, type: "HANDOVER_ACK", text: `handover ${h.handoverId} acknowledged`, user: h.toUserName }); if (h.refusedAt) ev.push({ at: h.refusedAt, type: "HANDOVER_REFUSED", text: `handover ${h.handoverId} refused: ${h.refusalReason}`, user: h.toUserName }); });
+  txns.forEach((t) => ev.push({ at: t.timestamp, type: t.transactionType, text: `${t.transactionType.toLowerCase()}: ${label(t)}${t.reason ? " · " + t.reason : ""}`, user: t.userName }));
+  kits.forEach((k) => ev.push({ at: k.createdAt, type: "KIT", text: `kit ${k.kitId} ${k.status.toLowerCase()}`, user: k.createdByName }));
+  ev.sort((a, b) => new Date(a.at) - new Date(b.at));
+  return { vehicle: { id: vehicle._id, vehicleNumber: vehicle.vehicleNumber, vin: vehicle.vin, model: vehicle.model, status: vehicle.status, bomRevision: vehicle.currentBOMRevision, lastAction: vehicle.lastAction, lastUpdatedByName: vehicle.lastUpdatedByName, lastUpdatedAt: vehicle.lastUpdatedAt }, events: ev };
+}
+module.exports.vehicleTimeline = vehicleTimeline;

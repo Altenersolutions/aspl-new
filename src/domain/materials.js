@@ -10,6 +10,8 @@ const codes = require("./codes");
 const { guarded, logOverride } = require("./overrides");
 const quality = require("./quality");
 const { reservedQty, binQty } = require("./reservations");
+const fifo = require("./fifo");
+const { rules } = require("./partRules");
 const { PurchaseOrder } = require("../models");
 const { resolveDestination, rejectionReason, findSpecial, locationPath } = require("./locations");
 
@@ -46,6 +48,7 @@ async function receive(user, body) {
   for (const [i, line] of body.lines.entries()) {
     const part = await PartMaster.findOne({ partNumber: s(line.partNumber).toUpperCase() });
     if (!part || !part.active) throw invalid(`Line ${i + 1}: unknown or inactive part ${line.partNumber}`);
+    if (rules(part).isDevelopment && (part.devStatus || "ACTIVE") !== "ACTIVE") throw new BusinessError("DEV_NOT_ACTIVE", `${part.partNumber} is a development component in status ${part.devStatus}; it must be ACTIVE before stock can be received.`, { details: { devStatus: part.devStatus } });
     const qty = Number(line.quantity);
     if (!(qty > 0) || (part.trackingType !== "QUANTITY" && !Number.isInteger(qty))) throw invalid(`Line ${i + 1}: invalid quantity`);
     const rev = s(line.revision) || part.currentRevision;
@@ -108,10 +111,12 @@ async function receive(user, body) {
           type: "RECEIPT", item, qty: u.quantity, to: receiving._id, fromStatus: null, toStatus: MS.RECEIVED,
           reason: `Received against invoice ${invoiceNo}`, refType: "Receipt", refId: receiptNo,
         });
-        sm.assertTransition(MS.RECEIVED, MS.PENDING_INCOMING_QC, "RECEIVE");
-        await ctx.set(MaterialItem, item._id, { status: MS.PENDING_INCOMING_QC });
+        // Production stock waits for incoming QC; GENERAL / DEVELOPMENT stock is available straight away unless the part is set to require QC.
+        const nextStatus = rules(p.part).qcRequired ? MS.PENDING_INCOMING_QC : MS.APPROVED;
+        sm.assertTransition(MS.RECEIVED, nextStatus, "RECEIVE");
+        await ctx.set(MaterialItem, item._id, { status: nextStatus });
         ids.push(item._id);
-        created.push({ id: item._id, partNumber: p.part.partNumber, serialNumber: u.serialNumber, batchNumber: u.batchNumber, quantity: u.quantity, qrCode: item.qrCode, transactionId: txn.transactionId });
+        created.push({ id: item._id, status: rules(p.part).qcRequired ? MS.PENDING_INCOMING_QC : MS.APPROVED, inventoryClass: rules(p.part).inventoryClass, partNumber: p.part.partNumber, serialNumber: u.serialNumber, batchNumber: u.batchNumber, quantity: u.quantity, qrCode: item.qrCode, transactionId: txn.transactionId });
       }
       receipt.lines.push({ part: p.part._id, materialItems: ids, quantity: p.qty });
     }
@@ -288,12 +293,43 @@ async function issue(user, body) {
   if (from.type !== "BIN") throw new BusinessError("INVALID_SOURCE", "Material can only be issued from a storage bin. Put it away first.");
   const wip = await findSpecial("WIP");
   const qty = Number(body.quantity);
+  const part = await PartMaster.findById(item.part);
+  const fifoErr = await guarded(user, body.override, () => fifo.assertFifo(item, part)); // null when FIFO is satisfied, the error when an authorised override was used
   const resv = await reservedQty(item._id); const free = (await binQty(item._id)) - resv;
   if (resv > 0 && qty > free) throw new BusinessError("RESERVED_STOCK", `${Math.max(0, free)} unit(s) are free; the rest is reserved for a kit. Issue the kit instead.`, { details: { free } });
   return atomic(async (ctx) => {
-    const txn = await ledger.post(ctx, user, { type: "ISSUE", item, qty, from: from._id, to: wip._id, fromStatus: item.status, toStatus: item.status, reason: body.purpose, refType: "Issue" });
-    await audit(ctx, user, { action: "MATERIAL_ISSUE", entityType: "MaterialItem", entityId: item._id, entityLabel: item.serialNumber || item.batchNumber, reason: body.purpose, before: { location: from.locationCode }, after: { location: wip.locationCode, quantity: qty }, reference: txn.transactionId });
-    return { ok: true, transaction: txn };
+    const txn = await ledger.post(ctx, user, { type: "ISSUE", item, qty, from: from._id, to: wip._id, fromStatus: item.status, toStatus: item.status, reason: fifoErr ? `FIFO OVERRIDE: ${body.override.reason} | ${body.purpose}` : body.purpose, refType: "Issue", override: !!fifoErr });
+    await audit(ctx, user, { action: "MATERIAL_ISSUE", entityType: "MaterialItem", entityId: item._id, entityLabel: item.serialNumber || item.batchNumber, reason: body.purpose, before: { location: from.locationCode }, after: { location: wip.locationCode, quantity: qty }, reference: txn.transactionId, override: !!fifoErr });
+    if (fifoErr) await logOverride(ctx, user, fifoErr, body.override, { operation: "ISSUE", originalValue: { olderStock: fifoErr.details.suggested }, newValue: { issued: item.serialNumber || item.batchNumber }, referenceTransaction: txn.transactionId, entityType: "MaterialItem", entityId: item._id, entityLabel: item.serialNumber || item.batchNumber });
+    return { ok: true, transaction: txn, fifoOverride: !!fifoErr };
+  });
+}
+
+// Auto-select: the system picks the oldest eligible stock (no manual lot choice, so FIFO cannot be bypassed by accident).
+async function issueFifo(user, body) {
+  const part = await PartMaster.findOne({ partNumber: s(body.partNumber).toUpperCase() });
+  if (!part || !part.active) throw invalid(`Unknown or inactive part ${body.partNumber}`);
+  if (!s(body.purpose)) throw invalid("Purpose is required to issue material.");
+  const qty = Number(body.quantity); if (!(qty > 0) || (part.trackingType !== "QUANTITY" && !Number.isInteger(qty))) throw new BusinessError("INVALID_QUANTITY", "Invalid quantity.", { status: 400 });
+  const { allocations, shortage } = await fifo.pickOldest(part, qty, s(body.revision) || undefined);
+  if (shortage > 0) throw new BusinessError("INSUFFICIENT_STOCK", `Only ${qty - shortage} free approved unit(s) of ${part.partNumber} are in storage; ${qty} requested.`, { details: { available: qty - shortage, requested: qty } });
+  const wip = await findSpecial("WIP");
+  return atomic(async (ctx) => {
+    const out = [];
+    for (const a of allocations) {
+      let left = a.qty;
+      const item = await MaterialItem.findById(a.item._id);
+      const bins = (await ledger.balancesOf(item._id)).filter((r) => r.location.type === "BIN");
+      for (const b of bins) {
+        if (left <= 0) break; const take = Math.min(left, b.quantity);
+        const txn = await ledger.post(ctx, user, { type: "ISSUE", item, qty: take, from: b.location._id, to: wip._id, fromStatus: item.status, toStatus: item.status, reason: `${body.purpose} (FIFO auto-select)`, refType: "Issue" });
+        await audit(ctx, user, { action: "MATERIAL_ISSUE", entityType: "MaterialItem", entityId: item._id, entityLabel: item.serialNumber || item.batchNumber, reason: body.purpose, before: { location: b.location.locationCode }, after: { location: wip.locationCode, quantity: take }, reference: txn.transactionId });
+        out.push({ itemId: item._id, serialNumber: item.serialNumber, batchNumber: item.batchNumber, revision: item.partRevision, from: b.location.locationCode, quantity: take, transactionId: txn.transactionId });
+        left -= take;
+      }
+      if (left > 0) throw new BusinessError("INSUFFICIENT_STOCK", "Stock changed while issuing; try again.");
+    }
+    return { ok: true, partNumber: part.partNumber, allocations: out };
   });
 }
 
@@ -371,4 +407,4 @@ async function statusOverride(user, body) {
   });
 }
 
-module.exports = { receive, inspect, disposition, putAwayPlan, putAway, issue, returnStock, transfer, adjust, statusOverride, getItem, getLocation };
+module.exports = { issueFifo, receive, inspect, disposition, putAwayPlan, putAway, issue, returnStock, transfer, adjust, statusOverride, getItem, getLocation };

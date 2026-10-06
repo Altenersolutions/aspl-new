@@ -3,8 +3,12 @@ const { Schema } = mongoose;
 const C = require("../domain/constants");
 const legacy = require("./legacy");
 const extra = require("./extra");
+const { Kit } = extra;
 
 const oid = (ref) => ({ type: Schema.Types.ObjectId, ref });
+const { lastUpdate } = legacy;
+// Any schema declared with { lastUpdate: true } gets the "last meaningful business action" fields.
+mongoose.plugin((schema) => { if (schema.options.lastUpdate) lastUpdate(schema); });
 
 // Blocks updates/deletes on append-only collections (ledger, audit, QC history).
 function appendOnly(schema, name) {
@@ -40,7 +44,7 @@ const Location = mongoose.model("WmsLocation", new Schema({
   allowedCategories: [String], // empty = any
   allowedPartTypes: [String],  // tracking types; empty = any
   capacity: Number,            // max total quantity, optional
-}, { timestamps: true }));
+}, { timestamps: true, lastUpdate: true }));
 
 const PartMaster = mongoose.model("WmsPart", new Schema({
   partNumber: { type: String, required: true, unique: true, uppercase: true, trim: true },
@@ -57,11 +61,15 @@ const PartMaster = mongoose.model("WmsPart", new Schema({
   },
   supplier: oid("WmsSupplier"),
   vehicleCompatibility: [{ type: String, enum: C.VEHICLE_TYPES }],
+  // inventoryClass = WHAT KIND of stock (GENERAL / PRODUCTION / DEVELOPMENT); trackingType = HOW it is counted (SERIAL / BATCH / QUANTITY).
+  inventoryClass: { type: String, enum: C.INVENTORY_CLASSES, default: "PRODUCTION" },
+  revisionControlled: Boolean, qcRequired: Boolean, fifoApplicable: Boolean, bomControlled: Boolean, // undefined => derived from class (see partRules)
+  devStatus: { type: String, enum: C.DEV_STATUS }, devReviewNote: String, // development components only
   currentRevision: { type: String, default: "REV-A" },
   minStock: { type: Number, default: 0 },
   active: { type: Boolean, default: true },
   legacy: { source: String, legacyId: String }, // provenance of migrated records
-}, { timestamps: true }));
+}, { timestamps: true, lastUpdate: true }));
 
 const PartRevision = mongoose.model("WmsPartRevision", new Schema({
   part: { ...oid("WmsPart"), required: true },
@@ -81,13 +89,13 @@ const Vehicle = mongoose.model("WmsVehicle", new Schema({
   currentBOMRevision: String,
   status: { type: String, enum: ["PLANNED", "UNDER_ASSEMBLY", "ASSEMBLED", "FINAL_QC", "RELEASED", "SCRAPPED"], default: "PLANNED" },
   qrCode: String,
-}, { timestamps: true }));
+}, { timestamps: true, lastUpdate: true }));
 
 const BOM = mongoose.model("WmsBom", new Schema({
   vehicleModel: { type: String, required: true, unique: true, uppercase: true },
   name: String,
   currentRevision: String,
-}, { timestamps: true }));
+}, { timestamps: true, lastUpdate: true }));
 
 const BOMRevision = mongoose.model("WmsBomRevision", new Schema({
   bom: { ...oid("WmsBom"), required: true },
@@ -106,7 +114,7 @@ const BOMRevision = mongoose.model("WmsBomRevision", new Schema({
     optional: { type: Boolean, default: false },
     installationPosition: String,
   }],
-}, { timestamps: true }));
+}, { timestamps: true, lastUpdate: true }));
 BOMRevision.schema.index({ bom: 1, revision: 1 }, { unique: true });
 
 const Receipt = mongoose.model("WmsReceipt", new Schema({
@@ -139,7 +147,7 @@ const MaterialItem = mongoose.model("WmsMaterialItem", new Schema({
   legacy: { type: Boolean, default: false }, // tracking data unknown / migrated
   legacyNote: String,
   qrCode: String,
-}, { timestamps: true }));
+}, { timestamps: true, lastUpdate: true }));
 MaterialItem.schema.index({ part: 1, serialNumber: 1 }, { unique: true, partialFilterExpression: { serialNumber: { $type: "string" } } });
 MaterialItem.schema.index({ part: 1, batchNumber: 1, supplier: 1, invoiceNo: 1 });
 
@@ -197,7 +205,7 @@ const InventoryTransaction = (() => {
   return mongoose.model("WmsTransaction", s);
 })();
 
-const Handover = mongoose.model("WmsHandover", new Schema({
+const Handover = mongoose.model("WmsHandover", (() => { const hs = new Schema({
   handoverId: { type: String, unique: true },
   materialItem: { ...oid("WmsMaterialItem"), required: true },
   part: oid("WmsPart"), partNumber: String,
@@ -212,7 +220,7 @@ const Handover = mongoose.model("WmsHandover", new Schema({
   acknowledgedAt: Date, refusedAt: Date,
   refusalReason: String,
   acknowledgementNote: String,
-}, { timestamps: true }));
+}, { timestamps: true }); lastUpdate(hs); return hs; })());
 
 // Permanent record. Removal closes it (removedAt) but never deletes it.
 const Installation = mongoose.model("WmsInstallation", new Schema({
@@ -273,7 +281,14 @@ const OverrideRecord = (() => {
 
 const Setting = mongoose.model("WmsSetting", new Schema({ key: { type: String, unique: true }, value: Schema.Types.Mixed }, { timestamps: true }));
 
+
+// Development component images: one row per upload, tied to a revision. Never updated or deleted, so earlier revisions keep their pictures.
+const PartImage = (() => {
+  const s = new Schema({ part: { ...oid("WmsPart"), required: true }, partNumber: String, revision: { type: String, required: true }, file: { ...oid("WmsFile"), required: true }, name: String, mime: String, caption: String, uploadedBy: oid("InventoryUser"), uploadedByName: String, uploadedAt: { type: Date, default: Date.now } });
+  s.index({ part: 1, revision: 1, uploadedAt: -1 }); appendOnly(s, "PartImage"); return mongoose.model("WmsPartImage", s);
+})();
+
 module.exports = {
-  ...legacy, ...extra, Role, Supplier, Location, PartMaster, PartRevision, Vehicle, BOM, BOMRevision, Receipt, MaterialItem,
+  PartImage, ...legacy, ...extra, Role, Supplier, Location, PartMaster, PartRevision, Vehicle, BOM, BOMRevision, Receipt, MaterialItem,
   StockBalance, QCInspection, InventoryTransaction, Handover, Installation, AuditLog, OverrideRecord, Setting,
 };

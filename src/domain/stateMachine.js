@@ -5,7 +5,7 @@ const { BusinessError } = require("./errors");
 
 // from -> { to: [allowed operations] }
 const MATERIAL_TRANSITIONS = {
-  [MS.RECEIVED]: { [MS.PENDING_INCOMING_QC]: ["RECEIVE"] },
+  [MS.RECEIVED]: { [MS.PENDING_INCOMING_QC]: ["RECEIVE"], [MS.APPROVED]: ["RECEIVE"] }, // APPROVED only for parts that do not require incoming QC (decided in materials.receive)
   [MS.PENDING_INCOMING_QC]: { [MS.APPROVED]: ["QC"], [MS.HOLD]: ["QC"], [MS.REJECTED]: ["QC"] },
   [MS.APPROVED]: {
     [MS.APPROVED]: ["QC"], [MS.HOLD]: ["QC"], [MS.REJECTED]: ["QC"],
