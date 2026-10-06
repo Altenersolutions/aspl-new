@@ -64,7 +64,9 @@ async function print(user, id, body = {}) {
   const printNo = (gp.printCount || 0) + 1;
   const log = [...(gp.printLog || []).map((x) => x.toObject ? x.toObject() : x), { no: printNo, at: new Date(), byId: user.id, byName: user.name, reprint, reason: s(body.reason) }];
   const updated = await atomic(async (ctx) => {
-    const u = await ctx.set(L.GatePass, gp._id, { printCount: printNo, printLog: log, lastPrintedAt: new Date(), lastPrintedByName: user.name });
+    const guard = (gp.printCount || 0) === 0 ? { $or: [{ printCount: 0 }, { printCount: { $exists: false } }] } : { printCount: gp.printCount };
+    const u = await ctx.set(L.GatePass, gp._id, { printCount: printNo, printLog: log, lastPrintedAt: new Date(), lastPrintedByName: user.name }, guard);
+    if (!u) throw new BusinessError("PRINT_CONFLICT", "This gate pass was just printed by someone else. Refresh and try again.", { status: 409 });
     await audit(ctx, user, { action: reprint ? "GATE_PASS_REPRINTED" : "GATE_PASS_PRINTED", entityType: "GatePass", entityId: gp._id, entityLabel: gp.refNo, reason: s(body.reason) || undefined, after: { printNo } });
     return u;
   });
