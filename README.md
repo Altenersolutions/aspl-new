@@ -46,5 +46,5 @@ Engineering → BOM → **Import BOM from Excel** (or **Import Excel** on a mode
 * Same names merge into one BOM line (quantities added); blank QTY → 1 (reported); the same file can be re-imported without duplicates (new revision name needed each time, e.g. REV-B).
 * The BOM is saved as a **DRAFT**; approve it as usual. Always run the **dry run** first.
 * When the real ID exists: Parts → **Set real part ID** (`POST /api/parts/:id/assign-number`). All BOM lines follow. Blocked once stock or a PO exists for the part.
-* API: `POST /api/import/bom-excel` `{ model, revision, changeReason, xlsxBase64, sheet?, dryRun? }` (permission `engineering.manage_bom`).
+* API: `POST /api/import/bom-excel` `{ model, revision, changeReason, rows (sheet read in the browser) or xlsxBase64 (small files), sheetName?, dryRun? }` (permission `engineering.manage_bom`).
 * TMP parts get category / tracking type from simple keyword rules – check them in Parts.

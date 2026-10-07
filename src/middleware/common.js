@@ -38,6 +38,7 @@ function errorHandler(err, req, res, next) { // eslint-disable-line
   if (err && err.name === "ValidationError") return res.status(400).json({ error: "VALIDATION", message: err.message });
   if (err && err.name === "CastError") return res.status(400).json({ error: "VALIDATION", message: `Invalid ${err.path}` });
   if (err && err.code === 11000) return res.status(409).json({ error: "DUPLICATE", message: "A record with the same unique value already exists.", details: err.keyValue });
+  if (err && err.type === "entity.too.large") return res.status(413).json({ error: "TOO_LARGE", message: "The upload is too large for the server. For Excel files use the latest app version (it reads the file in your browser)." });
   if (err && err.type === "entity.parse.failed") return res.status(400).json({ error: "VALIDATION", message: "Malformed JSON" });
   console.error(err);
   res.status(500).json({ error: "SERVER_ERROR", message: "Server error" });

@@ -4,13 +4,13 @@
 //   * re-importing the same sheet never creates duplicates (same name -> same part)
 // Provisional parts are flagged (`provisional: true`) and can later be given their real number
 // (POST /api/parts/:id/assign-number) - the BOM lines follow automatically.
+const mongoose = require("mongoose");
 const ExcelJS = require("exceljs");
 const M = require("../models");
 const C = require("./constants");
 const { BusinessError, invalid } = require("./errors");
 const { atomic } = require("./uow");
 const { audit } = require("./audit");
-const { nextId } = require("./counters");
 const { defaultsFor } = require("./partRules");
 
 const s = (v) => (v == null ? "" : String(v).trim());
@@ -119,9 +119,9 @@ function guess(l) {
   return { category, trackingType };
 }
 
-async function importBomExcel(user, model, meta, buffer, { sheet, dryRun } = {}) {
+async function importBomExcel(user, model, meta, source, { sheet, dryRun } = {}) {
   model = s(model).toUpperCase(); if (!model) throw invalid("Vehicle model is required.");
-  const sheets = await readWorkbook(buffer); const picked = pickSheet(sheets, model, sheet); const parsed = parseRows(picked.rows);
+  const sheets = Buffer.isBuffer(source) ? await readWorkbook(source) : [{ name: s(source.sheetName) || model, rows: source.rows }]; const picked = pickSheet(sheets, model, sheet); const parsed = parseRows(picked.rows);
   let bom = await M.BOM.findOne({ vehicleModel: model });
   if (bom && (await M.BOMRevision.exists({ bom: bom._id, revision: meta.revision }))) throw new BusinessError("DUPLICATE_REVISION", `${model} already has a revision named ${meta.revision}. Use a new revision name (e.g. the next letter).`, { status: 409 });
 
@@ -148,29 +148,38 @@ async function importBomExcel(user, model, meta, buffer, { sheet, dryRun } = {})
   if (dryRun) return summary;
 
   const compat = C.VEHICLE_TYPES.includes(model) ? [model] : [];
+  // Build everything in memory first, then write with a handful of bulk inserts (hundreds of single writes inside one
+  // transaction is slow enough to time out on Atlas / Render).
+  const nProv = plan.filter((x) => !x.part && x.how === "NEW_PROVISIONAL").length; let tmpNext = 0;
+  if (nProv) { const c = await M.Counter.findOneAndUpdate({ name: "tmpPart" }, { $inc: { seq: nProv } }, { new: true, upsert: true }); tmpNext = c.seq - nProv + 1; }
+  const now = new Date(); const newParts = [], newRevs = [], items = []; const seen = new Set();
+  for (const { l, part, how } of plan) {
+    let p = part;
+    if (!p) {
+      const g = guess(l); const provisional = how === "NEW_PROVISIONAL";
+      const partNumber = provisional ? `TMP-${String(tmpNext++).padStart(5, "0")}` : l.partNumber;
+      const d = { _id: new mongoose.Types.ObjectId(), partNumber, partName: l.name, description: l.spec || undefined, category: g.category, trackingType: g.trackingType, unit: "NOS", inventoryClass: "PRODUCTION", currentRevision: "REV-A",
+        vehicleCompatibility: compat, unitCost: l.unitCost || undefined, supplier: l.supplier ? suppliers.get(normName(l.supplier)) : undefined, sourcing: l.supplier || undefined, provisional, minStock: 0,
+        lastAction: "PART_CREATED", lastUpdatedBy: user.id, lastUpdatedByName: user.name || "", lastUpdatedAt: now };
+      Object.assign(d, defaultsFor(d)); newParts.push(d);
+      newRevs.push({ part: d._id, revision: "REV-A", status: "APPROVED", approvedBy: user.id, approvedAt: now, changeReason: `Created by BOM import (${model} ${meta.revision})`, effectiveDate: now });
+      p = { _id: d._id, partNumber, trackingType: g.trackingType };
+      byName.set(nk(l.name, l.spec), p); byNumber.set(partNumber, p);
+    }
+    if (seen.has(String(p._id))) throw new BusinessError("DUPLICATE_BOM_ITEM", `${p.partNumber} resolves from two different rows (same part number and name used inconsistently). Fix the sheet.`, { status: 400 });
+    seen.add(String(p._id));
+    items.push({ part: p._id, partNumber: p.partNumber, requiredQuantity: l.qty, trackingType: p.trackingType, optional: false, installationPosition: l.positions.join("; ").slice(0, 400) || undefined });
+  }
   const rev = await atomic(async (ctx) => {
     if (!bom) bom = await ctx.create(M.BOM, { vehicleModel: model, name: `${model} BOM` });
-    const items = []; const seen = new Set();
-    for (const { l, part, how } of plan) {
-      let p = part;
-      if (!p) {
-        const g = guess(l); const provisional = how === "NEW_PROVISIONAL";
-        const partNumber = provisional ? await nextId("tmpPart", "TMP", 5) : l.partNumber;
-        const d = { partNumber, partName: l.name, description: l.spec || undefined, category: g.category, trackingType: g.trackingType, unit: "NOS", inventoryClass: "PRODUCTION", currentRevision: "REV-A",
-          vehicleCompatibility: compat, unitCost: l.unitCost || undefined, supplier: l.supplier ? suppliers.get(normName(l.supplier)) : undefined, sourcing: l.supplier || undefined, provisional, minStock: 0 };
-        Object.assign(d, defaultsFor(d));
-        const created = await ctx.create(M.PartMaster, d);
-        await ctx.create(M.PartRevision, { part: created._id, revision: "REV-A", status: "APPROVED", approvedBy: user.id, approvedAt: new Date(), changeReason: `Created by BOM import (${model} ${meta.revision})`, effectiveDate: new Date() });
-        await audit(ctx, user, { action: "PART_CREATED", entityType: "Part", entityId: created._id, entityLabel: partNumber, where: `BOM Excel import ${model}${provisional ? " (provisional number)" : ""}` });
-        p = { _id: created._id, partNumber: created.partNumber, trackingType: created.trackingType };
-        byName.set(nk(l.name, l.spec), p); byNumber.set(p.partNumber, p);
-      }
-      if (seen.has(String(p._id))) throw new BusinessError("DUPLICATE_BOM_ITEM", `${p.partNumber} resolves from two different rows (same part number and name used inconsistently). Fix the sheet.`, { status: 400 });
-      seen.add(String(p._id));
-      items.push({ part: p._id, partNumber: p.partNumber, requiredQuantity: l.qty, trackingType: p.trackingType, optional: false, installationPosition: l.positions.join("; ").slice(0, 400) || undefined });
+    if (newParts.length) {
+      const ids = newParts.map((x) => x._id);
+      await M.PartMaster.insertMany(newParts, ctx.opt); ctx.onUndo(() => M.PartMaster.collection.deleteMany({ _id: { $in: ids } }));
+      await M.PartRevision.insertMany(newRevs, ctx.opt); ctx.onUndo(() => M.PartRevision.collection.deleteMany({ part: { $in: ids } }));
+      await audit(ctx, user, { action: "PARTS_CREATED_BY_IMPORT", entityType: "Part", entityLabel: `${newParts.length} parts`, where: `BOM Excel import ${model} ${meta.revision}`, after: { count: newParts.length, provisional: nProv, partNumbers: newParts.map((x) => x.partNumber).slice(0, 1000) } });
     }
-    const r = await ctx.create(M.BOMRevision, { bom: bom._id, vehicleModel: model, revision: meta.revision, effectiveDate: new Date(), changeReason: meta.changeReason, items, status: "DRAFT" });
-    await audit(ctx, user, { action: "BOM_REVISION_CREATED", entityType: "BOM", entityId: bom._id, entityLabel: `${model} ${r.revision}`, reason: meta.changeReason, where: "Excel import", after: { items: items.length, provisionalParts: summary.createdProvisional } });
+    const r = await ctx.create(M.BOMRevision, { bom: bom._id, vehicleModel: model, revision: meta.revision, effectiveDate: now, changeReason: meta.changeReason, items, status: "DRAFT" });
+    await audit(ctx, user, { action: "BOM_REVISION_CREATED", entityType: "BOM", entityId: bom._id, entityLabel: `${model} ${r.revision}`, reason: meta.changeReason, where: "Excel import", after: { items: items.length, provisionalParts: nProv } });
     return r;
   });
   return { ...summary, items: rev.items.length, status: rev.status };

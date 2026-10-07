@@ -64,3 +64,28 @@ test("same name with different specification stays two parts; hierarchical (asse
   assert.equal(r.lines.find((l) => l.partNumber === "9001").category, "MECHANICAL");
   const lamp = r.lines.find((l) => l.name === "LED Lamp"); assert.equal(lamp.category, "ELECTRICAL"); assert.deepEqual(lamp.positions, ["Head Light"]);
 });
+
+test("real import (stubbed DB): rows from the browser, parts bulk-inserted once, TMP numbers sequential, BOM draft created", async () => {
+  const q = (v) => ({ then: (res, rej) => Promise.resolve(v).then(res, rej), lean: async () => v });
+  const saved = {}; const orig = {};
+  const stub = (obj, k, fn) => { orig[`${obj.modelName}.${k}`] = [obj, k, obj[k]]; obj[k] = fn; };
+  const bom = { _id: "64b000000000000000000001", vehicleModel: "BUZZ" };
+  stub(M.BOM, "findOne", () => q(bom)); stub(M.BOM, "findOneAndUpdate", async () => ({}));
+  stub(M.BOMRevision, "exists", async () => null);
+  stub(M.BOMRevision, "create", async ([d]) => { saved.rev = d; return [d]; });
+  stub(M.PartMaster, "find", () => ({ lean: async () => [{ _id: "e1", partNumber: "MECH-0001", partName: "Center Chassis", description: "", trackingType: "BATCH" }] }));
+  stub(M.PartMaster, "insertMany", async (docs) => { saved.parts = docs; return docs; });
+  stub(M.PartRevision, "insertMany", async (docs) => { saved.revs = docs; return docs; });
+  stub(M.Supplier, "find", () => ({ lean: async () => [] }));
+  stub(M.Counter, "findOneAndUpdate", async (f, u) => ({ seq: 40 + u.$inc.seq }));
+  stub(M.AuditLog, "create", async ([d]) => { (saved.audit = saved.audit || []).push(d.action); return [d]; });
+  try {
+    const r = await importBomExcel({ id: "64b0000000000000000000aa", name: "T" }, "buzz", { revision: "REV-B", changeReason: "x" }, null || { sheetName: "Buzz", rows }, {});
+    assert.equal(saved.parts.length, 4);                       // Chassis exists; 4 new (Arm, Bolt, VCU is ID-less->TMP, Contactor) minus CTRL-001 given-id
+    assert.deepEqual(saved.parts.filter((p) => p.provisional).map((p) => p.partNumber), ["TMP-00041", "TMP-00042", "TMP-00043"].slice(0, saved.parts.filter((p) => p.provisional).length));
+    assert.equal(saved.revs.length, saved.parts.length);
+    assert.equal(saved.rev.items.length, 5); assert.equal(saved.rev.status, "DRAFT");
+    assert.deepEqual(saved.audit, ["PARTS_CREATED_BY_IMPORT", "BOM_REVISION_CREATED"]);
+    assert.equal(r.status, "DRAFT");
+  } finally { for (const [o, k, f] of Object.values(orig)) o[k] = f; }
+});
