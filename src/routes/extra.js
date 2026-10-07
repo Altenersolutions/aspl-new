@@ -6,6 +6,7 @@ const { P, can } = require("../domain/permissions");
 const { forbidden } = require("../domain/errors");
 const { BusinessError, notFound, invalid } = require("../domain/errors");
 const kitting = require("../domain/kitting");
+const bomExcel = require("../domain/bomExcel");
 const counts = require("../domain/cyclecount");
 const recall = require("../domain/recall");
 const quality = require("../domain/quality");
@@ -104,5 +105,7 @@ r.get("/export/:kind", requirePerm(P.REPORTS), wrap(async (req, res) => {
 const csvBody = z.object({ csv: z.string().max(1200000), dryRun: z.boolean().optional() });
 r.post("/import/parts", requirePerm(P.ENG_PARTS), validate(csvBody), wrap(async (req, res) => res.json(await catalog.importParts(req.user, parseCsv(req.body.csv), !!req.body.dryRun))));
 r.post("/import/bom", requirePerm(P.ENG_BOM), validate(csvBody.extend({ model: rq(40), revision: rq(40), changeReason: rq(500) })), wrap(async (req, res) => { const rev = await catalog.importBom(req.user, req.body.model, { revision: req.body.revision, changeReason: req.body.changeReason }, parseCsv(req.body.csv)); res.status(201).json({ ok: true, revision: rev.revision, items: rev.items.length, status: rev.status }); }));
+const bomExcelBody = z.object({ model: rq(40), revision: rq(40), changeReason: rq(500), xlsxBase64: z.string().min(100).max(1400000), sheet: str(80).optional(), dryRun: z.boolean().optional() });
+r.post("/import/bom-excel", requirePerm(P.ENG_BOM), validate(bomExcelBody), wrap(async (req, res) => { const b = req.body; const out = await bomExcel.importBomExcel(req.user, b.model, { revision: b.revision, changeReason: b.changeReason }, Buffer.from(b.xlsxBase64, "base64"), { sheet: b.sheet, dryRun: !!b.dryRun }); res.status(b.dryRun ? 200 : 201).json(out); }));
 r.post("/import/opening-stock", requirePerm(P.ADMIN_MASTER), validate(csvBody), wrap(async (req, res) => res.json(await catalog.importOpeningStock(req.user, parseCsv(req.body.csv), !!req.body.dryRun))));
 module.exports = r;

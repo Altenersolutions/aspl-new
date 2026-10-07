@@ -39,3 +39,12 @@ npm run load:presentation -- --no-demo-stock   # real BOM + assets only
 Run it against a fresh database (it refuses to run on one that already has parts unless you add `--force`). It is safe to run twice: existing part numbers are skipped and assets are matched on Asset No.
 
 New: **Capital Assets** register (`/api/assets`, `/api/assets/summary`, `/api/assets/export.csv`, `/api/import/assets`) – separate from stock. View: inventory.view / engineering.view / reports.view. Add / edit / import: admin.master_data.
+
+## BOM from Excel (parts without part IDs)
+Engineering → BOM → **Import BOM from Excel** (or **Import Excel** on a model). One sheet per vehicle model; needs a DESCRIPTION / PART NAME column, and uses PART NO, QTY, ASSEMBLY / POSITION, SUPPLIER, SPEC, UNIT COST when present (`src/domain/bomExcel.js` lists the accepted header names).
+* A line **with** a part number uses that part (created if new). A line **without** one is matched to an existing part by name, otherwise a **provisional** part `TMP-00001…` is created (flagged *TEMP ID* in Parts and in the BOM).
+* Same names merge into one BOM line (quantities added); blank QTY → 1 (reported); the same file can be re-imported without duplicates (new revision name needed each time, e.g. REV-B).
+* The BOM is saved as a **DRAFT**; approve it as usual. Always run the **dry run** first.
+* When the real ID exists: Parts → **Set real part ID** (`POST /api/parts/:id/assign-number`). All BOM lines follow. Blocked once stock or a PO exists for the part.
+* API: `POST /api/import/bom-excel` `{ model, revision, changeReason, xlsxBase64, sheet?, dryRun? }` (permission `engineering.manage_bom`).
+* TMP parts get category / tracking type from simple keyword rules – check them in Parts.

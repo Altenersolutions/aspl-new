@@ -69,6 +69,7 @@ const PartMaster = mongoose.model("WmsPart", new Schema({
   minStock: { type: Number, default: 0 },
   unitCost: Number, sourcing: String, // sourcing: Proprietary / Local / Inhouse (from the BOM sheet)
   active: { type: Boolean, default: true },
+  provisional: { type: Boolean, default: false }, // temporary TMP-xxxxx number from a BOM import; replace with the real part ID (assign-number)
   legacy: { source: String, legacyId: String }, // provenance of migrated records
 }, { timestamps: true, lastUpdate: true }));
 

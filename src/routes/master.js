@@ -81,9 +81,11 @@ async function partData(b) {
 const withRules = (p) => ({ ...p, rules: rules(p) });
 r.get("/parts", viewInv, wrap(async (req, res) => {
   const q = {}; if (req.query.q) { const rx = new RegExp(String(req.query.q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"); q.$or = [{ partNumber: rx }, { partName: rx }]; }
+  if (req.query.provisional === "true") q.provisional = true;
   if (req.query.class) q.inventoryClass = String(req.query.class).toUpperCase();
   res.json((await M.PartMaster.find(q).sort({ partNumber: 1 }).limit(1000).populate("defaultLocation", "locationCode path").lean()).map(withRules));
 }));
+r.post("/parts/:id/assign-number", requirePerm(P.ENG_PARTS), validate(z.object({ partNumber: rq(60) })), wrap(async (req, res) => res.json(await require("../domain/bomExcel").assignPartNumber(req.user, req.params.id, req.body.partNumber))));
 r.get("/parts/:id", viewInv, wrap(async (req, res) => { const p = await M.PartMaster.findById(req.params.id).populate("defaultLocation", "locationCode path").lean(); if (!p) throw notFound("Part"); res.json({ ...withRules(p), revisions: await M.PartRevision.find({ part: p._id }).sort({ createdAt: 1 }).lean() }); }));
 r.post("/parts", engParts, validate(partBody), wrap(async (req, res) => {
   const d = await partData(req.body); d.partNumber = d.partNumber.toUpperCase();
@@ -146,7 +148,7 @@ r.post("/parts/:id/images", requirePerm(P.ENG_DEV), validate(z.object({ revision
 const bomItem = z.object({ partNumber: rq(60), requiredQuantity: z.number().int().positive(), requiredRevision: str(40).optional(), optional: z.boolean().optional(), installationPosition: str(120).optional() });
 r.get("/bom", viewEng, wrap(async (req, res) => res.json(await M.BOM.find().sort({ vehicleModel: 1 }).lean())));
 r.post("/bom", requirePerm(P.ENG_BOM), validate(z.object({ vehicleModel: rq(40), name: str(120).optional() })), wrap(async (req, res) => res.status(201).json(await M.BOM.create({ ...req.body, vehicleModel: req.body.vehicleModel.toUpperCase() }))));
-r.get("/bom/:model/revisions", viewEng, wrap(async (req, res) => res.json(await M.BOMRevision.find({ vehicleModel: req.params.model.toUpperCase() }).sort({ createdAt: 1 }).populate("items.part", "partName").lean())));
+r.get("/bom/:model/revisions", viewEng, wrap(async (req, res) => res.json(await M.BOMRevision.find({ vehicleModel: req.params.model.toUpperCase() }).sort({ createdAt: 1 }).populate("items.part", "partName provisional").lean())));
 r.post("/bom/:model/revisions", requirePerm(P.ENG_BOM), validate(z.object({ revision: rq(40), effectiveDate: str(40).optional(), changeReason: rq(500), items: z.array(bomItem).min(1).max(1000) })), wrap(async (req, res) => {
   const rev = await require("../domain/catalog").createBomRevision(req.user, req.params.model, req.body);
   res.status(201).json(rev);
